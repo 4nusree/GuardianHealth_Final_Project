@@ -1183,13 +1183,61 @@ def api_blockchain_verify():
     if _blockchain is None:
         return jsonify({'error': 'Blockchain not initialised'}), 503
     valid, issues = _blockchain.is_chain_valid()
+    checks_run = [
+        'anchor_integrity',
+        'sequential_index',
+        'hash_integrity',
+        'chain_linkage',
+        'timestamp_monotonicity',
+        'proof_of_work',
+        'ecdsa_signature',
+    ]
     return jsonify({
         'valid':         valid,
         'total_blocks':  len(_blockchain.chain),
         'issues':        issues,
         'anchor_intact': _blockchain._verify_anchor(),
+        'checks_run':    checks_run,
         'message':       'Chain intact — all blocks verified' if valid else 'TAMPERING DETECTED',
     })
+
+
+@app.route('/api/blockchain/public-key', methods=['GET'])
+@require_auth(roles=['admin'])
+def api_blockchain_public_key():
+    if _blockchain is None:
+        return jsonify({'error': 'Blockchain not initialised'}), 503
+    pem = _blockchain.get_public_key_pem()
+    return jsonify({
+        'algorithm':  'ECDSA secp256k1',
+        'usage':      'Verifies ECDSA signatures on every blockchain block',
+        'public_key': pem,
+        'note':       'Private key is stored server-side only and never exposed to clients.',
+    })
+
+
+@app.route('/api/blockchain/tamper-demo', methods=['POST'])
+@require_auth(roles=['admin'])
+def api_blockchain_tamper_demo():
+    """
+    Presentation demo only — simulates in-memory tampering on a chosen block
+    and runs full verification to show which checks catch it.
+    The real persisted chain is NEVER modified.
+    """
+    if _blockchain is None:
+        return jsonify({'error': 'Blockchain not initialised'}), 503
+    if len(_blockchain.chain) < 2:
+        return jsonify({'error': 'Need at least 2 blocks to simulate tampering'}), 400
+
+    data          = request.get_json(silent=True) or {}
+    target_index  = int(data.get('block_index', 1))
+
+    try:
+        result = _blockchain.simulate_tamper(target_index)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    return jsonify(result)
 
 # ── API: Sessions ──────────────────────────────────────────────────────────────
 

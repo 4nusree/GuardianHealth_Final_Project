@@ -214,6 +214,13 @@ class HealthcareBlockchain:
             current  = self.chain[i]
             previous = self.chain[i - 1]
 
+            # Check #0 — Sequential index (replay / duplicate block protection)
+            if current.index != previous.index + 1:
+                issues.append({
+                    "block":   i,
+                    "problem": f"Non-sequential index — expected {previous.index + 1}, got {current.index} (replay or gap attack)",
+                })
+
             # Check #1 — Hash integrity (data not modified)
             if current.hash != current.compute_hash():
                 issues.append({
@@ -257,6 +264,73 @@ class HealthcareBlockchain:
                 })
 
         return len(issues) == 0, issues
+
+    def simulate_tamper(self, target_index: int) -> dict:
+        """
+        In-memory tamper simulation for demonstration.
+        Modifies a block's data in a temporary copy, then runs full
+        verification to show exactly which checks catch the tampering.
+        The real persisted chain is NEVER modified.
+        """
+        if target_index <= 0 or target_index >= len(self.chain):
+            raise ValueError(f"target_index must be between 1 and {len(self.chain) - 1}")
+
+        tampered = [Block.from_dict(b.to_dict()) for b in self.chain]
+        victim   = tampered[target_index]
+
+        original_data = dict(victim.data)
+        victim.data   = dict(victim.data)
+        victim.data["action"]      = "[TAMPERED] Unauthorized Access Granted"
+        victim.data["user_email"]  = "attacker@malicious.com"
+        victim.data["db_row_hash"] = "0" * 64
+
+        issues: list[dict] = []
+        target_prefix = "0" * self.DIFFICULTY
+
+        if not self._verify_anchor():
+            issues.append({"block": "anchor", "problem": "Anchor mismatch", "check": "anchor"})
+
+        for i in range(1, len(tampered)):
+            cur  = tampered[i]
+            prev = tampered[i - 1]
+
+            if cur.index != prev.index + 1:
+                issues.append({"block": i, "check": "sequential_index",
+                                "problem": f"Non-sequential index {cur.index}"})
+
+            if cur.hash != cur.compute_hash():
+                issues.append({"block": i, "check": "hash_integrity",
+                                "problem": "Hash mismatch — data was modified"})
+
+            if cur.previous_hash != prev.hash:
+                issues.append({"block": i, "check": "chain_linkage",
+                                "problem": "Chain broken — previous_hash mismatch"})
+
+            if cur.timestamp <= prev.timestamp:
+                issues.append({"block": i, "check": "timestamp",
+                                "problem": "Timestamp violation"})
+
+            if not cur.hash.startswith("0" * cur.difficulty_used):
+                issues.append({"block": i, "check": "proof_of_work",
+                                "problem": "Proof-of-work invalid"})
+
+            if cur.signature:
+                if not self._verify_signature(cur.hash, cur.signature):
+                    issues.append({"block": i, "check": "signature",
+                                   "problem": "Signature invalid — re-mined without server key"})
+            else:
+                issues.append({"block": i, "check": "signature",
+                                "problem": "Missing signature"})
+
+        return {
+            "tampered_block":  target_index,
+            "original_action": original_data.get("action", ""),
+            "forged_action":   victim.data["action"],
+            "detected":        len(issues) > 0,
+            "issues_found":    len(issues),
+            "issues":          issues,
+            "note":            "This is a READ-ONLY simulation. The real chain was NOT modified.",
+        }
 
     def get_chain_summary(self) -> dict:
         valid, issues = self.is_chain_valid()
