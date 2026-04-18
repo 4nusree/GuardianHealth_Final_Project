@@ -59,7 +59,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (lc && window.Chart) {
       new window.Chart(lc, {
         type: 'bar',
-        data: { labels: days, datasets: [{ data: [42,38,55,47,61,29,45], backgroundColor: 'rgba(20,184,166,0.5)', borderColor: '#14b8a6', borderWidth: 1, borderRadius: 4 }] },
+        data: { labels: days, datasets: [{ data: [0,0,0,0,0,0,0], backgroundColor: 'rgba(20,184,166,0.5)', borderColor: '#14b8a6', borderWidth: 1, borderRadius: 4 }] },
         options: opts
       });
     }
@@ -68,7 +68,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (fc && window.Chart) {
       new window.Chart(fc, {
         type: 'line',
-        data: { labels: days, datasets: [{ data: [3,1,5,2,4,1,3], fill: true, backgroundColor: 'rgba(239,68,68,0.1)', borderColor: '#ef4444', borderWidth: 2, pointBackgroundColor: '#ef4444', tension: 0.4 }] },
+        data: { labels: days, datasets: [{ data: [0,0,0,0,0,0,0], fill: true, backgroundColor: 'rgba(239,68,68,0.1)', borderColor: '#ef4444', borderWidth: 2, pointBackgroundColor: '#ef4444', tension: 0.4 }] },
         options: opts
       });
     }

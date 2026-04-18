@@ -158,6 +158,6 @@ document.addEventListener('DOMContentLoaded', async function() {
   });
 
   document.getElementById('notif-btn').addEventListener('click', function() {
-    showToast('3 Alerts', 'Suspicious login attempt from Moscow, RU detected.', 'error');
+    showToast('No Alerts', 'No new security alerts.', 'default');
   });
 });

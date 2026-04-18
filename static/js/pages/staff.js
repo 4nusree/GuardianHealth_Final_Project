@@ -6,27 +6,22 @@ document.addEventListener('DOMContentLoaded', function() {
   if (!user) return;
   Auth.populateUI(user);
 
-  var tasks = [
-    { id: 1, text: 'Update vitals for Room 204 (Michael Scott)', priority: 'high', done: false },
-    { id: 2, text: 'Administer medication — Emily Chen, 2PM', priority: 'high', done: false },
-    { id: 3, text: 'Collect lab samples from Room 301', priority: 'medium', done: true },
-    { id: 4, text: 'Update patient intake forms', priority: 'medium', done: false },
-    { id: 5, text: 'Restock IV supplies in storage', priority: 'low', done: false },
-    { id: 6, text: 'Sanitize examination Room 3', priority: 'low', done: true },
-  ];
+  var tasks = [];
 
-  var staffPatients = [
-    { name: 'Emily Chen', room: '204', condition: 'Hypertension', status: 'Stable' },
-    { name: 'Michael Scott', room: '301', condition: 'Type 2 Diabetes', status: 'Critical' },
-    { name: 'Pam Beesly', room: '210', condition: 'Pregnancy', status: 'Monitoring' },
-  ];
+  var staffPatients = [];
 
   function updateStats() {
     document.getElementById('stat-pending').textContent = tasks.filter(function(t) { return !t.done; }).length;
     document.getElementById('stat-done').textContent = tasks.filter(function(t) { return t.done; }).length;
+    var patEl = document.getElementById('stat-patients');
+    if (patEl) patEl.textContent = staffPatients.length;
   }
 
   function renderTasks() {
+    if (!tasks.length) {
+      document.getElementById('task-list').innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">No tasks assigned.</div>';
+      return;
+    }
     document.getElementById('task-list').innerHTML = tasks.map(function(t) {
       return '<div class="task-item">' +
         '<input type="checkbox" class="task-cb" data-tid="' + t.id + '" ' + (t.done ? 'checked' : '') + '/>' +

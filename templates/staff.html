@@ -22,7 +22,7 @@
 
 <div class="stats-grid mb-6">
   <div class="stat-card">
-    <div><div class="stat-label">Assigned Patients</div><div class="stat-value">3</div></div>
+    <div><div class="stat-label">Assigned Patients</div><div class="stat-value" id="stat-patients">0</div></div>
     <div class="stat-icon icon-primary"><i data-lucide="users"></i></div>
   </div>
   <div class="stat-card">
@@ -50,9 +50,7 @@
         <div class="form-group">
           <label class="form-label">Patient</label>
           <select class="form-select" id="vitals-patient">
-            <option>Emily Chen — Room 204</option>
-            <option>Michael Scott — Room 301</option>
-            <option>Pam Beesly — Room 210</option>
+            <option value="">— Select a patient —</option>
           </select>
         </div>
         <div class="vitals-grid">

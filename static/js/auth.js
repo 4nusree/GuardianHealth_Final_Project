@@ -70,10 +70,8 @@ window.Auth = {
     if (topbarName) topbarName.textContent = user.name;
   },
 
-  /* Legacy: kept so old code that calls Auth.login() still works during transition */
   login(email) {
-    const found = window.MOCK_USERS ? window.MOCK_USERS.find(u => u.email.toLowerCase() === email.toLowerCase()) : null;
-    const user = found || { id: 'guest', name: email.split('@')[0], email, role: 'patient', status: 'active', mfaEnabled: true };
+    const user = { id: 'guest', name: email.split('@')[0], email, role: 'patient', status: 'active', mfaEnabled: true };
     try { localStorage.setItem('gh_user', JSON.stringify(user)); } catch(e) {}
     return user;
   },

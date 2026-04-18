@@ -6,13 +6,13 @@ document.addEventListener('DOMContentLoaded', function() {
   if (!user) return;
   Auth.populateUI(user);
 
-  var consents = [
-    { doc: 'Dr. James Wilson', dept: 'Cardiology', allowed: true },
-    { doc: 'Dr. Lisa Cuddy', dept: 'Endocrinology', allowed: false },
-    { doc: 'Dr. Allison Cameron', dept: 'Immunology', allowed: true },
-  ];
+  var consents = [];
 
   function renderConsents() {
+    if (!consents.length) {
+      document.getElementById('consent-list').innerHTML = '<p class="text-sm text-muted">No provider consents configured.</p>';
+      return;
+    }
     document.getElementById('consent-list').innerHTML = consents.map(function(c, i) {
       return '<div class="consent-item">' +
         '<div><div class="consent-doc">' + c.doc + '</div><div class="consent-dept">' + c.dept + '</div></div>' +

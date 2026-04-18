@@ -182,14 +182,10 @@ def _make_hash(data, prev_hash=''):
 
 # ── Database Initialisation ───────────────────────────────────────────────────
 
-_SEED_PASSWORD = 'Guardian2024!'
-
 def init_db():
     """
-    Create tables + indexes and seed demo data exactly once.
+    Create tables + indexes on startup.
     Uses a dedicated connection separate from Flask's per-request g.db.
-    Seed guard: only inserts when users table is empty, so restarts are safe.
-    ON CONFLICT DO NOTHING provides an extra safety net if the guard races.
     """
     conn = psycopg2.connect(DATABASE_URL)
     try:
@@ -322,74 +318,6 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_mfa_email_otps_user_id
                 ON mfa_email_otps(user_id, created_at DESC)
             """)
-
-        conn.commit()
-
-        # ── Seed guard ────────────────────────────────────────────────────────
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute('SELECT COUNT(*) AS c FROM users')
-            if cur.fetchone()['c'] > 0:
-                return  # already seeded — nothing to do
-
-        seed_hash = _hash_pw(_SEED_PASSWORD)
-
-        with conn.cursor() as cur:
-            users = [
-                ('u1','Dr. Sarah Admin',  'admin@guardian.health',   seed_hash,'admin',  'active',   1,'Oct 24, 2023 8:12 AM', 'IT Security'),
-                ('u2','Dr. James Wilson', 'doctor@guardian.health',  seed_hash,'doctor', 'active',   1,'Oct 24, 2023 9:30 AM', 'Cardiology'),
-                ('u3','Emily Chen',       'patient@guardian.health', seed_hash,'patient','active',   1,'Oct 23, 2023 2:45 PM', None),
-                ('u4','Marcus Johnson',   'staff@guardian.health',   seed_hash,'staff',  'active',   0,'Oct 24, 2023 7:55 AM', 'Triage'),
-                ('u5','Dr. Lisa Cuddy',   'lcuddy@guardian.health',  seed_hash,'doctor', 'active',   1,'Oct 24, 2023 8:45 AM', 'Endocrinology'),
-                ('u6','Robert Chase',     'rc@guardian.health',      seed_hash,'staff',  'pending',  0,'Never',                'ICU'),
-                ('u7','Gregory House',    'house@guardian.health',   seed_hash,'doctor', 'suspended',0,'Oct 1, 2023 11:20 AM', 'Diagnostics'),
-                ('u8','Allison Cameron',  'acameron@guardian.health',seed_hash,'doctor', 'active',   1,'Oct 24, 2023 9:10 AM', 'Immunology'),
-            ]
-            for u in users:
-                cur.execute(
-                    'INSERT INTO users(id,name,email,password_hash,role,status,mfa_enabled,last_login,department) '
-                    'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING', u
-                )
-
-            patients = [
-                ('p1','Emily Chen',    34,'Hypertension',              'Oct 15, 2023','Stable',    'u2',True),
-                ('p2','Michael Scott', 45,'Type 2 Diabetes',           'Oct 20, 2023','Critical',  'u2',True),
-                ('p3','Jim Halpert',   42,'Asthma',                    'Sep 05, 2023','Stable',    'u5',False),
-                ('p4','Pam Beesly',    38,'Pregnancy (2nd Trimester)', 'Oct 22, 2023','Monitoring','u5',True),
-            ]
-            for p in patients:
-                cur.execute(
-                    'INSERT INTO patients(id,name,age,condition,last_visit,status,doctor_id,consent_flag) '
-                    'VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING', p
-                )
-
-            raw_logs = [
-                ('log1','Login Success',                      'admin@guardian.health', 'u1','192.168.1.45','Verified','Oct 24, 2023 8:12 AM'),
-                ('log2','Accessed Patient Record (P1)',        'doctor@guardian.health','u2','10.0.0.12',  'Verified','Oct 24, 2023 9:35 AM'),
-                ('log3','Failed Login (Invalid MFA)',          'staff@guardian.health', 'u4','45.22.11.90','Flagged', 'Oct 24, 2023 7:50 AM'),
-                ('log4','Updated Prescription (P2)',           'doctor@guardian.health','u2','10.0.0.12',  'Verified','Oct 24, 2023 9:40 AM'),
-                ('log5','Role Modified (u4 → Senior Staff)',  'admin@guardian.health', 'u1','192.168.1.45','Verified','Oct 24, 2023 10:05 AM'),
-                ('log6','Document Downloaded (Report)',        'patient@guardian.health','u3','73.44.120.5','Verified','Oct 23, 2023 2:55 PM'),
-            ]
-            prev = ''
-            for lid, action, email, uid, ip, status, ts in raw_logs:
-                h = _make_hash({'id': lid, 'action': action, 'user': email, 'ip': ip, 'ts': ts}, prev)
-                cur.execute(
-                    'INSERT INTO audit_logs(id,hash,prev_hash,action,user_email,user_id,ip,status,timestamp) '
-                    'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING',
-                    (lid, h, prev, action, email, uid, ip, status, ts)
-                )
-                prev = h
-
-            sessions = [
-                ('sess1','u1','MacBook Pro (Chrome)','192.168.1.45','New York, USA','Active',    'Oct 24, 2023 8:12 AM'),
-                ('sess2','u1','iPhone 13 (Safari)',  '10.0.0.12',  'New York, USA','Active',    'Oct 24, 2023 9:30 AM'),
-                ('sess3','u1','Windows PC (Edge)',   '45.22.11.90','Moscow, RU',   'Terminated','Oct 23, 2023 11:15 PM'),
-            ]
-            for s in sessions:
-                cur.execute(
-                    'INSERT INTO sessions(id,user_id,device,ip,location,status,created_at) '
-                    'VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING', s
-                )
 
         conn.commit()
     except Exception:
