@@ -90,10 +90,17 @@ def _verify_pw(stored_hash, password):
         return stored_hash == hashlib.sha256(password.encode('utf-8')).hexdigest()
     return bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8'))
 
-def _hash_otp(user_id, code):
+def _hash_mfa_temp_token(temp_token):
     return hmac.new(
         SECRET_KEY.encode('utf-8'),
-        f'{user_id}:{code}'.encode('utf-8'),
+        temp_token.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+def _hash_otp(user_id, temp_token, code):
+    return hmac.new(
+        SECRET_KEY.encode('utf-8'),
+        f'{user_id}:{temp_token}:{code}'.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
 
@@ -137,17 +144,18 @@ def _mask_email(email):
         masked_local = local[:1] + '*' * (len(local) - 2) + local[-1:]
     return masked_local + '@' + domain
 
-def _issue_email_otp(db, user):
+def _issue_email_otp(db, user, temp_token):
     code = f'{secrets.randbelow(1000000):06d}'
     otp_id = 'otp_' + secrets.token_hex(10)
     expires_at = datetime.datetime.utcnow() + datetime.timedelta(minutes=MFA_OTP_TTL_MINUTES)
-    code_hash = _hash_otp(user['id'], code)
+    code_hash = _hash_otp(user['id'], temp_token, code)
+    temp_token_hash = _hash_mfa_temp_token(temp_token)
     with _cur(db) as cur:
         cur.execute("UPDATE mfa_email_otps SET used=TRUE WHERE user_id=%s AND used=FALSE", (user['id'],))
         cur.execute(
-            'INSERT INTO mfa_email_otps(id,user_id,code_hash,expires_at,attempts,used) '
-            'VALUES(%s,%s,%s,%s,0,FALSE)',
-            (otp_id, user['id'], code_hash, expires_at)
+            'INSERT INTO mfa_email_otps(id,user_id,temp_token_hash,code_hash,expires_at,attempts,used) '
+            'VALUES(%s,%s,%s,%s,%s,0,FALSE)',
+            (otp_id, user['id'], temp_token_hash, code_hash, expires_at)
         )
     db.commit()
     try:
@@ -235,6 +243,7 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS mfa_email_otps (
                     id         TEXT PRIMARY KEY,
                     user_id    TEXT NOT NULL,
+                    temp_token_hash TEXT,
                     code_hash  TEXT NOT NULL,
                     expires_at TIMESTAMPTZ NOT NULL,
                     attempts   INTEGER NOT NULL DEFAULT 0,
@@ -242,6 +251,7 @@ def init_db():
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            cur.execute("ALTER TABLE mfa_email_otps ADD COLUMN IF NOT EXISTS temp_token_hash TEXT")
 
             # ── Indexes ───────────────────────────────────────────────────────
             # users.email is already covered by the UNIQUE constraint.
@@ -450,15 +460,15 @@ def api_login():
 
         mfa_required = bool(user['mfa_enabled'])
         if mfa_required:
+            temp_token = create_token(user['id'], user['role'], user['email'], expiry_hours=0.17, token_type='mfa')
             try:
-                _issue_email_otp(db, user)
+                _issue_email_otp(db, user, temp_token)
             except RuntimeError:
                 _write_audit('Login Failed (MFA Email Not Configured)', user['email'], ip, 'Flagged', user['id'])
                 return jsonify({'error': 'Email verification is not configured. Contact your administrator.'}), 503
             except Exception:
                 _write_audit('Login Failed (MFA Email Delivery Failed)', user['email'], ip, 'Flagged', user['id'])
                 return jsonify({'error': 'Could not send verification code. Please try again.'}), 503
-            temp_token = create_token(user['id'], user['role'], user['email'], expiry_hours=0.17, token_type='mfa')
             _write_audit('Login Step 1 Passed (Email MFA Code Sent)', user['email'], ip, 'Verified', user['id'])
             return jsonify({
                 'mfa_required': True,
@@ -514,24 +524,25 @@ def api_verify_mfa():
         return jsonify({'error': 'MFA code must be exactly 6 digits.'}), 400
 
     try:
+        temp_token_hash = _hash_mfa_temp_token(temp_token)
         with _cur(db) as cur:
             cur.execute(
                 'SELECT *, (expires_at <= NOW()) AS expired FROM mfa_email_otps '
-                'WHERE user_id=%s AND used=FALSE ORDER BY created_at DESC LIMIT 1',
-                (user['id'],)
+                'WHERE user_id=%s AND temp_token_hash=%s AND used=FALSE ORDER BY created_at DESC LIMIT 1',
+                (user['id'], temp_token_hash)
             )
             otp_row = cur.fetchone()
 
         if not otp_row:
             _write_audit('Login Failed (No Active MFA Code)', user['email'], ip, 'Flagged', user['id'])
-            return jsonify({'error': 'No active verification code. Please request a new one.'}), 400
+            return jsonify({'error': 'Invalid or expired code.'}), 400
 
         if otp_row['expired']:
             with _cur(db) as cur:
                 cur.execute('UPDATE mfa_email_otps SET used=TRUE WHERE id=%s', (otp_row['id'],))
             db.commit()
             _write_audit('Login Failed (Expired MFA Code)', user['email'], ip, 'Flagged', user['id'])
-            return jsonify({'error': 'Verification code expired. Please request a new one.'}), 400
+            return jsonify({'error': 'Invalid or expired code.'}), 400
 
         if otp_row['attempts'] >= MFA_OTP_MAX_ATTEMPTS:
             with _cur(db) as cur:
@@ -540,7 +551,7 @@ def api_verify_mfa():
             _write_audit('Login Failed (MFA Attempts Exceeded)', user['email'], ip, 'Flagged', user['id'])
             return jsonify({'error': 'Too many verification attempts. Please request a new code.'}), 429
 
-        expected_hash = _hash_otp(user['id'], code)
+        expected_hash = _hash_otp(user['id'], temp_token, code)
         if not hmac.compare_digest(otp_row['code_hash'], expected_hash):
             attempts = int(otp_row['attempts']) + 1
             lock_code = attempts >= MFA_OTP_MAX_ATTEMPTS
@@ -551,7 +562,7 @@ def api_verify_mfa():
             _write_audit('Login Failed (Invalid MFA Code)', user['email'], ip, 'Flagged', user['id'])
             if lock_code:
                 return jsonify({'error': 'Too many verification attempts. Please request a new code.'}), 429
-            return jsonify({'error': 'Invalid verification code.'}), 400
+            return jsonify({'error': 'Invalid or expired code.'}), 400
 
         last_login = datetime.datetime.utcnow().strftime('%b %d, %Y %I:%M %p')
         with _cur(db) as cur:
@@ -593,11 +604,12 @@ def api_resend_mfa():
         return jsonify({'error': 'MFA is not enabled for this account.'}), 400
 
     ip = _get_client_ip()
+    temp_token_hash = _hash_mfa_temp_token(temp_token)
     with _cur(db) as cur:
         cur.execute(
             'SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_seconds '
-            'FROM mfa_email_otps WHERE user_id=%s ORDER BY created_at DESC LIMIT 1',
-            (user['id'],)
+            'FROM mfa_email_otps WHERE user_id=%s AND temp_token_hash=%s ORDER BY created_at DESC LIMIT 1',
+            (user['id'], temp_token_hash)
         )
         latest = cur.fetchone()
     if latest and latest['age_seconds'] is not None and float(latest['age_seconds']) < MFA_OTP_RESEND_SECONDS:
@@ -605,7 +617,7 @@ def api_resend_mfa():
         return jsonify({'error': f'Please wait {retry_after} seconds before requesting another code.', 'retry_after': retry_after}), 429
 
     try:
-        _issue_email_otp(db, user)
+        _issue_email_otp(db, user, temp_token)
     except RuntimeError:
         _write_audit('MFA Code Resend Failed (Email Not Configured)', user['email'], ip, 'Flagged', user['id'])
         return jsonify({'error': 'Email verification is not configured. Contact your administrator.'}), 503
