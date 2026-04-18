@@ -42,6 +42,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     document.getElementById('break-glass-section').classList.remove('hidden');
   }
 
+  var mfaToggle = document.getElementById('mfa-toggle');
+  if (mfaToggle) mfaToggle.checked = !!user.mfaEnabled;
+
   // Load active sessions from API
   try {
     var sessions = await Auth.get('/api/sessions') || [];
@@ -83,11 +86,26 @@ document.addEventListener('DOMContentLoaded', async function() {
   });
 
   // MFA toggles
-  document.getElementById('mfa-toggle').addEventListener('change', function() {
-    showToast('MFA ' + (this.checked ? 'Enabled' : 'Disabled'), this.checked ? 'Your account is now more secure.' : 'MFA has been disabled.', this.checked ? 'success' : 'error');
+  document.getElementById('mfa-toggle').addEventListener('change', async function() {
+    var toggle = this;
+    var desired = toggle.checked;
+    toggle.disabled = true;
+    try {
+      var updated = await Auth.put('/api/auth/mfa', { mfaEnabled: desired });
+      if (updated) {
+        Auth.setSession(updated, Auth.getToken());
+        user = updated;
+      }
+      showToast('MFA ' + (desired ? 'Enabled' : 'Disabled'), desired ? 'Email verification will be required at next login.' : 'MFA has been disabled.', desired ? 'success' : 'error');
+    } catch(e) {
+      toggle.checked = !desired;
+      showToast('Error', e.message, 'error');
+    } finally {
+      toggle.disabled = false;
+    }
   });
   document.getElementById('setup-auth-btn').addEventListener('click', function() {
-    showToast('QR Code Ready', 'Scan with Google Authenticator to link your device.', 'default');
+    showToast('Email MFA Active', 'Verification codes are sent to your registered email during login.', 'default');
   });
   document.getElementById('backup-btn').addEventListener('click', function() {
     showToast('Codes Generated', 'Backup codes downloaded securely.', 'success');

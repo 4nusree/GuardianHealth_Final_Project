@@ -7,6 +7,8 @@
   var timeLeft = 60;
   var pendingEmail = '';
   var tempToken = '';
+  var resendAfterSeconds = 60;
+  var codeExpiresMinutes = 10;
 
   function getRisk(email) {
     if (!email) return null;
@@ -30,7 +32,7 @@
 
   function startTimer() {
     clearInterval(timerInterval);
-    timeLeft = 60;
+    timeLeft = resendAfterSeconds;
     updateTimer();
     timerInterval = setInterval(function() {
       timeLeft--;
@@ -42,6 +44,11 @@
   function updateTimer() {
     var el = document.getElementById('timer-val');
     if (el) el.textContent = timeLeft;
+    var resend = document.getElementById('resend-btn');
+    if (resend) {
+      resend.disabled = timeLeft > 0;
+      resend.textContent = timeLeft > 0 ? 'Resend Code' : 'Resend Code Now';
+    }
   }
 
   async function submitCredentials() {
@@ -70,7 +77,11 @@
 
       if (data.mfa_required) {
         tempToken = data.temp_token;
-        showToast('Step 1 Complete', 'Please complete MFA to continue.', 'default');
+        resendAfterSeconds = data.resend_after_seconds || 60;
+        codeExpiresMinutes = data.expires_in_minutes || 10;
+        var subtitle = document.getElementById('mfa-subtitle');
+        if (subtitle) subtitle.textContent = 'Enter the 6-digit code sent to ' + (data.masked_email || 'your registered email') + '. It expires in ' + codeExpiresMinutes + ' minutes.';
+        showToast('Code Sent', 'Check your registered email for the verification code.', 'default');
         showStep('mfa');
       } else {
         // No MFA required — direct login
@@ -186,9 +197,32 @@
       clearInterval(timerInterval);
       showStep('credentials');
     });
-    document.getElementById('resend-btn').addEventListener('click', function() {
-      startTimer();
-      showToast('Code Sent', 'New verification code sent to your device.', 'default');
+    document.getElementById('resend-btn').addEventListener('click', async function() {
+      if (timeLeft > 0) return;
+      var btn = this;
+      btn.disabled = true;
+      try {
+        var res = await fetch('/api/auth/resend-mfa', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ temp_token: tempToken }),
+        });
+        var data = await res.json();
+        if (!res.ok) {
+          showToast('Could Not Resend', data.error || 'Please try again later.', 'error');
+          btn.disabled = false;
+          return;
+        }
+        resendAfterSeconds = data.resend_after_seconds || 60;
+        codeExpiresMinutes = data.expires_in_minutes || 10;
+        var subtitle = document.getElementById('mfa-subtitle');
+        if (subtitle) subtitle.textContent = 'Enter the 6-digit code sent to ' + (data.masked_email || 'your registered email') + '. It expires in ' + codeExpiresMinutes + ' minutes.';
+        startTimer();
+        showToast('Code Sent', 'A new verification code was sent to your registered email.', 'default');
+      } catch(e) {
+        showToast('Connection Error', 'Could not resend the verification code.', 'error');
+        btn.disabled = false;
+      }
     });
 
     initOtp();

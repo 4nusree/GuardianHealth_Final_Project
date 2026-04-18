@@ -1,6 +1,7 @@
 from flask import Flask, render_template, redirect, request, jsonify, g
 import psycopg2, psycopg2.extras, psycopg2.errors
-import os, hashlib, json, jwt, datetime, functools, secrets, re, bcrypt
+import os, hashlib, hmac, json, jwt, datetime, functools, secrets, re, bcrypt, smtplib
+from email.message import EmailMessage
 
 # Load .env file when running locally (no-op if the file doesn't exist or if
 # the variables are already set by the host environment, e.g. Replit Secrets).
@@ -17,6 +18,9 @@ SECRET_KEY = os.environ.get('JWT_SECRET', 'gh-zero-trust-secret-2024-change-in-p
 _raw_db_url = (os.environ.get('SUPABASE_DB_URL') or '').strip()
 # Auto-correct common typo: /postgre → /postgres
 DATABASE_URL = _raw_db_url + 's' if _raw_db_url.endswith('/postgre') else _raw_db_url
+MFA_OTP_TTL_MINUTES = int(os.environ.get('MFA_OTP_TTL_MINUTES', '10'))
+MFA_OTP_MAX_ATTEMPTS = int(os.environ.get('MFA_OTP_MAX_ATTEMPTS', '5'))
+MFA_OTP_RESEND_SECONDS = int(os.environ.get('MFA_OTP_RESEND_SECONDS', '60'))
 
 if not DATABASE_URL:
     raise RuntimeError(
@@ -85,6 +89,75 @@ def _verify_pw(stored_hash, password):
     if _is_sha256_hash(stored_hash):
         return stored_hash == hashlib.sha256(password.encode('utf-8')).hexdigest()
     return bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8'))
+
+def _hash_otp(user_id, code):
+    return hmac.new(
+        SECRET_KEY.encode('utf-8'),
+        f'{user_id}:{code}'.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+def _smtp_settings():
+    settings = {
+        'host': os.environ.get('SMTP_HOST', '').strip(),
+        'port': int(os.environ.get('SMTP_PORT', '587')),
+        'username': os.environ.get('SMTP_USERNAME', '').strip(),
+        'password': os.environ.get('SMTP_PASSWORD', '').strip(),
+        'from_email': os.environ.get('SMTP_FROM_EMAIL', '').strip(),
+        'from_name': os.environ.get('SMTP_FROM_NAME', 'GuardianHealth').strip() or 'GuardianHealth',
+    }
+    missing = [k for k, v in settings.items() if k != 'port' and not v]
+    if missing:
+        raise RuntimeError('Missing SMTP configuration: ' + ', '.join(missing))
+    return settings
+
+def _send_otp_email(user, code):
+    settings = _smtp_settings()
+    msg = EmailMessage()
+    msg['Subject'] = 'Your GuardianHealth verification code'
+    msg['From'] = f'{settings["from_name"]} <{settings["from_email"]}>'
+    msg['To'] = user['email']
+    msg.set_content(
+        f'Hello {user["name"]},\n\n'
+        f'Your GuardianHealth verification code is: {code}\n\n'
+        f'This code expires in {MFA_OTP_TTL_MINUTES} minutes. '
+        'If you did not try to sign in, contact your administrator immediately.\n\n'
+        'GuardianHealth Security'
+    )
+    with smtplib.SMTP(settings['host'], settings['port'], timeout=15) as smtp:
+        smtp.starttls()
+        smtp.login(settings['username'], settings['password'])
+        smtp.send_message(msg)
+
+def _mask_email(email):
+    local, _, domain = email.partition('@')
+    if len(local) <= 2:
+        masked_local = local[:1] + '*'
+    else:
+        masked_local = local[:1] + '*' * (len(local) - 2) + local[-1:]
+    return masked_local + '@' + domain
+
+def _issue_email_otp(db, user):
+    code = f'{secrets.randbelow(1000000):06d}'
+    otp_id = 'otp_' + secrets.token_hex(10)
+    expires_at = datetime.datetime.utcnow() + datetime.timedelta(minutes=MFA_OTP_TTL_MINUTES)
+    code_hash = _hash_otp(user['id'], code)
+    with _cur(db) as cur:
+        cur.execute("UPDATE mfa_email_otps SET used=TRUE WHERE user_id=%s AND used=FALSE", (user['id'],))
+        cur.execute(
+            'INSERT INTO mfa_email_otps(id,user_id,code_hash,expires_at,attempts,used) '
+            'VALUES(%s,%s,%s,%s,0,FALSE)',
+            (otp_id, user['id'], code_hash, expires_at)
+        )
+    db.commit()
+    try:
+        _send_otp_email(user, code)
+    except Exception:
+        with _cur(db) as cur:
+            cur.execute('UPDATE mfa_email_otps SET used=TRUE WHERE id=%s', (otp_id,))
+        db.commit()
+        raise
+    return expires_at
 
 # ── Audit Chain Hashing ───────────────────────────────────────────────────────
 
@@ -158,6 +231,17 @@ def init_db():
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS mfa_email_otps (
+                    id         TEXT PRIMARY KEY,
+                    user_id    TEXT NOT NULL,
+                    code_hash  TEXT NOT NULL,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    attempts   INTEGER NOT NULL DEFAULT 0,
+                    used       BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
 
             # ── Indexes ───────────────────────────────────────────────────────
             # users.email is already covered by the UNIQUE constraint.
@@ -175,6 +259,10 @@ def init_db():
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_email
                 ON audit_logs(user_email)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_mfa_email_otps_user_id
+                ON mfa_email_otps(user_id, created_at DESC)
             """)
 
         conn.commit()
@@ -254,11 +342,12 @@ def init_db():
 
 # ── Auth Helpers ───────────────────────────────────────────────────────────────
 
-def create_token(user_id, role, email, expiry_hours=24):
+def create_token(user_id, role, email, expiry_hours=24, token_type='access'):
     payload = {
         'sub': user_id,
         'role': role,
         'email': email,
+        'type': token_type,
         'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=expiry_hours),
         'iat': datetime.datetime.utcnow(),
     }
@@ -277,6 +366,8 @@ def require_auth(roles=None):
             except jwt.ExpiredSignatureError:
                 return jsonify({'error': 'Token expired'}), 401
             except jwt.InvalidTokenError:
+                return jsonify({'error': 'Invalid token'}), 401
+            if data.get('type', 'access') != 'access':
                 return jsonify({'error': 'Invalid token'}), 401
             if roles and data.get('role') not in roles:
                 return jsonify({'error': 'Forbidden'}), 403
@@ -359,9 +450,24 @@ def api_login():
 
         mfa_required = bool(user['mfa_enabled'])
         if mfa_required:
-            temp_token = create_token(user['id'], user['role'], user['email'], expiry_hours=0.05)
-            _write_audit('Login Step 1 Passed (MFA Required)', user['email'], ip, 'Verified', user['id'])
-            return jsonify({'mfa_required': True, 'temp_token': temp_token, 'name': user['name']})
+            try:
+                _issue_email_otp(db, user)
+            except RuntimeError:
+                _write_audit('Login Failed (MFA Email Not Configured)', user['email'], ip, 'Flagged', user['id'])
+                return jsonify({'error': 'Email verification is not configured. Contact your administrator.'}), 503
+            except Exception:
+                _write_audit('Login Failed (MFA Email Delivery Failed)', user['email'], ip, 'Flagged', user['id'])
+                return jsonify({'error': 'Could not send verification code. Please try again.'}), 503
+            temp_token = create_token(user['id'], user['role'], user['email'], expiry_hours=0.17, token_type='mfa')
+            _write_audit('Login Step 1 Passed (Email MFA Code Sent)', user['email'], ip, 'Verified', user['id'])
+            return jsonify({
+                'mfa_required': True,
+                'temp_token': temp_token,
+                'name': user['name'],
+                'masked_email': _mask_email(user['email']),
+                'expires_in_minutes': MFA_OTP_TTL_MINUTES,
+                'resend_after_seconds': MFA_OTP_RESEND_SECONDS,
+            })
 
         # MFA disabled — issue full session token
         _write_audit('Login Success (MFA Disabled)', user['email'], ip, 'Verified', user['id'])
@@ -392,6 +498,8 @@ def api_verify_mfa():
         claims = jwt.decode(temp_token, SECRET_KEY, algorithms=['HS256'])
     except jwt.InvalidTokenError:
         return jsonify({'error': 'Session expired. Please login again.'}), 401
+    if claims.get('type') != 'mfa':
+        return jsonify({'error': 'Invalid verification session.'}), 401
 
     db = get_db()
     with _cur(db) as cur:
@@ -405,11 +513,113 @@ def api_verify_mfa():
         _write_audit('Login Failed (Malformed MFA Code)', user['email'], ip, 'Flagged', user['id'])
         return jsonify({'error': 'MFA code must be exactly 6 digits.'}), 400
 
-    _write_audit('Login Failed (MFA Not Yet Implemented)', user['email'], ip, 'Flagged', user['id'])
+    try:
+        with _cur(db) as cur:
+            cur.execute(
+                'SELECT *, (expires_at <= NOW()) AS expired FROM mfa_email_otps '
+                'WHERE user_id=%s AND used=FALSE ORDER BY created_at DESC LIMIT 1',
+                (user['id'],)
+            )
+            otp_row = cur.fetchone()
+
+        if not otp_row:
+            _write_audit('Login Failed (No Active MFA Code)', user['email'], ip, 'Flagged', user['id'])
+            return jsonify({'error': 'No active verification code. Please request a new one.'}), 400
+
+        if otp_row['expired']:
+            with _cur(db) as cur:
+                cur.execute('UPDATE mfa_email_otps SET used=TRUE WHERE id=%s', (otp_row['id'],))
+            db.commit()
+            _write_audit('Login Failed (Expired MFA Code)', user['email'], ip, 'Flagged', user['id'])
+            return jsonify({'error': 'Verification code expired. Please request a new one.'}), 400
+
+        if otp_row['attempts'] >= MFA_OTP_MAX_ATTEMPTS:
+            with _cur(db) as cur:
+                cur.execute('UPDATE mfa_email_otps SET used=TRUE WHERE id=%s', (otp_row['id'],))
+            db.commit()
+            _write_audit('Login Failed (MFA Attempts Exceeded)', user['email'], ip, 'Flagged', user['id'])
+            return jsonify({'error': 'Too many verification attempts. Please request a new code.'}), 429
+
+        expected_hash = _hash_otp(user['id'], code)
+        if not hmac.compare_digest(otp_row['code_hash'], expected_hash):
+            attempts = int(otp_row['attempts']) + 1
+            lock_code = attempts >= MFA_OTP_MAX_ATTEMPTS
+            with _cur(db) as cur:
+                cur.execute('UPDATE mfa_email_otps SET attempts=%s, used=%s WHERE id=%s',
+                            (attempts, lock_code, otp_row['id']))
+            db.commit()
+            _write_audit('Login Failed (Invalid MFA Code)', user['email'], ip, 'Flagged', user['id'])
+            if lock_code:
+                return jsonify({'error': 'Too many verification attempts. Please request a new code.'}), 429
+            return jsonify({'error': 'Invalid verification code.'}), 400
+
+        last_login = datetime.datetime.utcnow().strftime('%b %d, %Y %I:%M %p')
+        with _cur(db) as cur:
+            cur.execute('UPDATE mfa_email_otps SET used=TRUE WHERE id=%s', (otp_row['id'],))
+            cur.execute('UPDATE users SET last_login=%s WHERE id=%s', (last_login, user['id']))
+            cur.execute(
+                'INSERT INTO sessions(id,user_id,device,ip,location,status) VALUES(%s,%s,%s,%s,%s,%s)',
+                ('sess_' + secrets.token_hex(8), user['id'], _parse_device(request.headers.get('User-Agent', '')), ip, 'Unknown', 'Active')
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    user['last_login'] = last_login
+    token = create_token(user['id'], user['role'], user['email'])
+    _write_audit('Login Success (Email MFA Verified)', user['email'], ip, 'Verified', user['id'])
+    return jsonify({'token': token, 'user': _user_dict(user)})
+
+
+@app.route('/api/auth/resend-mfa', methods=['POST'])
+def api_resend_mfa():
+    data = request.get_json(silent=True) or {}
+    temp_token = data.get('temp_token') or ''
+    try:
+        claims = jwt.decode(temp_token, SECRET_KEY, algorithms=['HS256'])
+    except jwt.InvalidTokenError:
+        return jsonify({'error': 'Session expired. Please login again.'}), 401
+    if claims.get('type') != 'mfa':
+        return jsonify({'error': 'Invalid verification session.'}), 401
+
+    db = get_db()
+    with _cur(db) as cur:
+        cur.execute('SELECT * FROM users WHERE id=%s', (claims['sub'],))
+        user = cur.fetchone()
+    if not user:
+        return jsonify({'error': 'User not found'}), 401
+    if not bool(user['mfa_enabled']):
+        return jsonify({'error': 'MFA is not enabled for this account.'}), 400
+
+    ip = _get_client_ip()
+    with _cur(db) as cur:
+        cur.execute(
+            'SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_seconds '
+            'FROM mfa_email_otps WHERE user_id=%s ORDER BY created_at DESC LIMIT 1',
+            (user['id'],)
+        )
+        latest = cur.fetchone()
+    if latest and latest['age_seconds'] is not None and float(latest['age_seconds']) < MFA_OTP_RESEND_SECONDS:
+        retry_after = MFA_OTP_RESEND_SECONDS - int(float(latest['age_seconds']))
+        return jsonify({'error': f'Please wait {retry_after} seconds before requesting another code.', 'retry_after': retry_after}), 429
+
+    try:
+        _issue_email_otp(db, user)
+    except RuntimeError:
+        _write_audit('MFA Code Resend Failed (Email Not Configured)', user['email'], ip, 'Flagged', user['id'])
+        return jsonify({'error': 'Email verification is not configured. Contact your administrator.'}), 503
+    except Exception:
+        _write_audit('MFA Code Resend Failed (Email Delivery Failed)', user['email'], ip, 'Flagged', user['id'])
+        return jsonify({'error': 'Could not send verification code. Please try again.'}), 503
+
+    _write_audit('MFA Code Resent', user['email'], ip, 'Verified', user['id'])
     return jsonify({
-        'error': 'MFA verification is not yet configured on this system. '
-                 'Contact your administrator to enable access.'
-    }), 501
+        'ok': True,
+        'masked_email': _mask_email(user['email']),
+        'expires_in_minutes': MFA_OTP_TTL_MINUTES,
+        'resend_after_seconds': MFA_OTP_RESEND_SECONDS,
+    })
 
 
 @app.route('/api/auth/register', methods=['POST'])
@@ -467,6 +677,31 @@ def api_change_password():
 
     _write_audit('Password Changed', g.token_data['email'], _get_client_ip(), 'Verified', g.token_data['sub'])
     return jsonify({'ok': True})
+
+
+@app.route('/api/auth/mfa', methods=['PUT'])
+@require_auth()
+def api_update_own_mfa():
+    data = request.get_json(silent=True) or {}
+    if 'mfaEnabled' not in data:
+        return jsonify({'error': 'mfaEnabled is required'}), 400
+
+    enabled = 1 if data.get('mfaEnabled') else 0
+    db = get_db()
+    try:
+        with _cur(db) as cur:
+            cur.execute('UPDATE users SET mfa_enabled=%s WHERE id=%s', (enabled, g.token_data['sub']))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    action = 'MFA Enabled' if enabled else 'MFA Disabled'
+    _write_audit(action, g.token_data['email'], _get_client_ip(), 'Verified', g.token_data['sub'])
+    with _cur(db) as cur:
+        cur.execute('SELECT * FROM users WHERE id=%s', (g.token_data['sub'],))
+        user = cur.fetchone()
+    return jsonify(_user_dict(user))
 
 # ── API: Users ─────────────────────────────────────────────────────────────────
 
