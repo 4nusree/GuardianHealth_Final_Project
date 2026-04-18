@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}Security Center — GuardianHealth{% endblock %}
+
+{% block head_extra %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block sidebar_nav %}
+<a href="/admin" class="nav-link"><i data-lucide="activity"></i>Dashboard</a>
+<a href="/security" class="nav-link active"><i data-lucide="shield"></i>Security Center</a>
+<a href="/iam" class="nav-link"><i data-lucide="users"></i>IAM / Access</a>
+<a href="/audit-logs" class="nav-link"><i data-lucide="fingerprint"></i>Audit Logs</a>
+<a href="/settings" class="nav-link"><i data-lucide="settings"></i>Settings</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Security Center</h1>
+    <p class="page-subtitle">Monitor sessions, activity, and threats</p>
+  </div>
+</div>
+
+<div class="stats-grid mb-6">
+  <div class="stat-card">
+    <div><div class="stat-label">Active Sessions</div><div class="stat-value" id="stat-sessions">—</div></div>
+    <div class="stat-icon icon-green"><i data-lucide="monitor"></i></div>
+  </div>
+  <div class="stat-card">
+    <div><div class="stat-label">Failed Logins (24h)</div><div class="stat-value">12</div></div>
+    <div class="stat-icon icon-orange"><i data-lucide="alert-triangle"></i></div>
+  </div>
+  <div class="stat-card">
+    <div><div class="stat-label">Suspicious IPs</div><div class="stat-value">1</div></div>
+    <div class="stat-icon icon-red"><i data-lucide="shield-alert"></i></div>
+  </div>
+  <div class="stat-card">
+    <div><div class="stat-label">MFA Events (24h)</div><div class="stat-value">47</div></div>
+    <div class="stat-icon icon-primary"><i data-lucide="fingerprint"></i></div>
+  </div>
+</div>
+
+<div class="grid-2 mb-6">
+  <div class="card">
+    <div class="card-header"><h2 class="card-title">Login Activity (7d)</h2></div>
+    <div class="card-body"><div class="chart-container"><canvas id="login-chart"></canvas></div></div>
+  </div>
+  <div class="card">
+    <div class="card-header"><h2 class="card-title">Failed Attempts (7d)</h2></div>
+    <div class="card-body"><div class="chart-container"><canvas id="failed-chart"></canvas></div></div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-header"><h2 class="card-title">Active Sessions</h2></div>
+    <div id="sessions-list"><!-- Populated by security.js --></div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title" style="display:flex;align-items:center;gap:8px;">
+        <i data-lucide="alert-triangle" style="width:16px;height:16px;color:var(--warning);"></i>Security Alerts
+      </h2>
+    </div>
+    <div class="card-body">
+      <div class="alert-item alert-critical">
+        <div class="alert-icon"><i data-lucide="shield-x"></i></div>
+        <div><div class="alert-title">Suspicious Login Detected</div><div class="alert-desc">Login attempt from Moscow, RU (45.22.11.90) — Oct 23, 11:15 PM</div></div>
+      </div>
+      <div class="alert-item alert-warning">
+        <div class="alert-icon"><i data-lucide="alert-triangle"></i></div>
+        <div><div class="alert-title">MFA Failure Spike</div><div class="alert-desc">3 failed MFA attempts on staff@guardian.health within 5 minutes</div></div>
+      </div>
+      <div class="alert-item alert-info">
+        <div class="alert-icon"><i data-lucide="info"></i></div>
+        <div><div class="alert-title">New Device Login</div><div class="alert-desc">Dr. Wilson logged in from iPhone 13 (Safari) for the first time</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pages/security.js"></script>
+{% endblock %}

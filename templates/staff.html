@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block title %}Staff Portal — GuardianHealth{% endblock %}
+
+{% block sidebar_nav %}
+<a href="/staff" class="nav-link active"><i data-lucide="check-square"></i>Assigned Tasks</a>
+<a href="/settings" class="nav-link"><i data-lucide="settings"></i>Settings</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Staff Portal</h1>
+    <p class="page-subtitle">Assigned patients and tasks</p>
+  </div>
+</div>
+
+<div class="limited-access-banner">
+  <i data-lucide="alert-triangle"></i>
+  Limited Access Mode — You can only view assigned patient vitals. Full records require physician authorization.
+</div>
+
+<div class="stats-grid mb-6">
+  <div class="stat-card">
+    <div><div class="stat-label">Assigned Patients</div><div class="stat-value">3</div></div>
+    <div class="stat-icon icon-primary"><i data-lucide="users"></i></div>
+  </div>
+  <div class="stat-card">
+    <div><div class="stat-label">Pending Tasks</div><div class="stat-value" id="stat-pending">—</div></div>
+    <div class="stat-icon icon-orange"><i data-lucide="clock"></i></div>
+  </div>
+  <div class="stat-card">
+    <div><div class="stat-label">Completed Today</div><div class="stat-value" id="stat-done">—</div></div>
+    <div class="stat-icon icon-green"><i data-lucide="check-circle"></i></div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div>
+    <!-- Task List -->
+    <div class="card mb-6">
+      <div class="card-header"><h2 class="card-title">Today's Tasks</h2></div>
+      <div id="task-list"><!-- Populated by staff.js --></div>
+    </div>
+
+    <!-- Vitals Form -->
+    <div class="card">
+      <div class="card-header"><h2 class="card-title">Update Patient Vitals</h2></div>
+      <div class="card-body">
+        <div class="form-group">
+          <label class="form-label">Patient</label>
+          <select class="form-select" id="vitals-patient">
+            <option>Emily Chen — Room 204</option>
+            <option>Michael Scott — Room 301</option>
+            <option>Pam Beesly — Room 210</option>
+          </select>
+        </div>
+        <div class="vitals-grid">
+          <div class="vitals-field">
+            <label class="vitals-label">Blood Pressure</label>
+            <input class="vitals-input" id="v-bp" placeholder="e.g. 120/80"/>
+          </div>
+          <div class="vitals-field">
+            <label class="vitals-label">Heart Rate (bpm)</label>
+            <input class="vitals-input" id="v-hr" placeholder="e.g. 72"/>
+          </div>
+          <div class="vitals-field">
+            <label class="vitals-label">Temperature (°F)</label>
+            <input class="vitals-input" id="v-temp" placeholder="e.g. 98.6"/>
+          </div>
+          <div class="vitals-field">
+            <label class="vitals-label">Weight (lbs)</label>
+            <input class="vitals-input" id="v-wt" placeholder="e.g. 165"/>
+          </div>
+        </div>
+        <button class="btn-primary mt-4" id="save-vitals-btn">
+          <i data-lucide="save" style="width:16px;height:16px;"></i> Save Vitals
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Patient Table -->
+  <div class="card" style="height:fit-content;">
+    <div class="card-header"><h2 class="card-title">Assigned Patients</h2></div>
+    <div class="table-wrapper">
+      <table>
+        <thead><tr><th>Name</th><th>Room</th><th>Condition</th><th>Status</th><th></th></tr></thead>
+        <tbody id="patients-tbody"><!-- Populated by staff.js --></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pages/staff.js"></script>
+{% endblock %}

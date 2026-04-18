@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}Physician Portal — GuardianHealth{% endblock %}
+
+{% block sidebar_nav %}
+<a href="/doctor" class="nav-link active"><i data-lucide="stethoscope"></i>My Patients</a>
+<a href="/audit-logs" class="nav-link"><i data-lucide="fingerprint"></i>Audit Logs</a>
+<a href="/settings" class="nav-link"><i data-lucide="settings"></i>Settings</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Physician Portal</h1>
+    <p class="page-subtitle">Secure patient record access</p>
+  </div>
+</div>
+
+<div class="grid-2-1">
+  <!-- Patient List -->
+  <div>
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Assigned Patients</h2>
+        <div class="search-wrapper" style="width:220px;">
+          <i data-lucide="search"></i>
+          <input type="text" class="search-input" id="patient-search" placeholder="Search patients..."/>
+        </div>
+      </div>
+      <div id="patient-list">
+        <!-- Populated by doctor.js -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail Panel -->
+  <div id="detail-panel">
+    <div class="empty-panel">
+      <i data-lucide="shield-check"></i>
+      <p>Select a patient to securely view their records.</p>
+      <p style="font-size:11px;color:var(--text-muted);">All access is logged and monitored.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pages/doctor.js"></script>
+{% endblock %}

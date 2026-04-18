@@ -1,0 +1,70 @@
+{% extends "auth_base.html" %}
+
+{% block title %}Request Access — GuardianHealth{% endblock %}
+{% block auth_subtitle %}Submit your registration for admin approval{% endblock %}
+{% block auth_max_width %}480px{% endblock %}
+{% block auth_footer %}Already have an account? <a href="/login">Sign In</a>{% endblock %}
+
+{% block auth_content %}
+<div id="reg-form">
+  <div class="form-group">
+    <label class="form-label">Full Name</label>
+    <input type="text" id="reg-name" class="form-input" placeholder="Dr. Jane Doe"/>
+  </div>
+  <div class="form-group">
+    <label class="form-label">Email Address</label>
+    <input type="email" id="reg-email" class="form-input" placeholder="jane@hospital.org"/>
+  </div>
+  <div class="form-group">
+    <label class="form-label">Password</label>
+    <input type="password" id="reg-pass" class="form-input" placeholder="Min. 8 characters"/>
+  </div>
+  <div class="form-group">
+    <label class="form-label">Confirm Password</label>
+    <input type="password" id="reg-pass2" class="form-input" placeholder="Repeat password"/>
+  </div>
+  <div class="form-group">
+    <label class="form-label">Role</label>
+    <select id="reg-role" class="form-select">
+      <option value="">Select your role...</option>
+      <option value="patient">Patient</option>
+      <option value="doctor">Doctor / Physician</option>
+      <option value="staff">Clinical Staff</option>
+    </select>
+  </div>
+  <div id="doc-upload-section" class="form-group hidden">
+    <label class="form-label">Verification Documents</label>
+    <label class="file-upload-area" id="upload-label">
+      <input type="file" id="doc-file" accept=".pdf,.jpg,.png"/>
+      <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="margin:0 auto 8px;display:block;opacity:0.4;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <p id="upload-label-text">Click to upload license / certificate</p>
+      <p style="font-size:11px;color:var(--text-muted);margin-top:4px;">PDF, JPG or PNG — Max 10MB</p>
+    </label>
+  </div>
+  <button class="btn-primary" id="reg-submit">
+    Submit Registration
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+  </button>
+</div>
+
+<div id="reg-success" class="hidden" style="text-align:center;padding:12px 0 4px;">
+  <div class="status-card">
+    <div style="width:64px;height:64px;background:var(--primary-bg);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
+      <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="none" stroke="#14b8a6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+    </div>
+    <h3>Request Submitted!</h3>
+    <p>Your registration is pending admin approval. You'll receive an email once your account is activated.</p>
+  </div>
+  <div class="pending-badge" style="margin-top:20px;display:inline-flex;">
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+    Status: Pending Admin Approval
+  </div>
+  <div style="margin-top:24px;">
+    <a href="/login" class="btn-outline" style="display:inline-flex;">← Back to Login</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pages/register.js"></script>
+{% endblock %}

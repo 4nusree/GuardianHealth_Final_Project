@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+
+{% block title %}Settings — GuardianHealth{% endblock %}
+
+{% block sidebar_nav %}
+<div id="settings-nav"><!-- Populated by settings.js based on role --></div>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Account Settings</h1>
+    <p class="page-subtitle">Security preferences and account configuration</p>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div style="display:flex;flex-direction:column;gap:20px;">
+
+    <!-- Change Password -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title" style="display:flex;align-items:center;gap:8px;">
+          <i data-lucide="key" style="width:16px;height:16px;color:var(--primary);"></i> Change Password
+        </h2>
+      </div>
+      <div class="card-body">
+        <div class="form-group">
+          <label class="form-label">Current Password</label>
+          <input type="password" class="form-input" id="cur-pass" placeholder="Enter current password"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">New Password</label>
+          <input type="password" class="form-input" id="new-pass" placeholder="Min. 12 characters"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Confirm New Password</label>
+          <input type="password" class="form-input" id="conf-pass" placeholder="Repeat new password"/>
+        </div>
+        <button class="btn-primary" id="save-pass-btn">
+          <i data-lucide="save" style="width:16px;height:16px;"></i> Update Password
+        </button>
+      </div>
+    </div>
+
+    <!-- MFA -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title" style="display:flex;align-items:center;gap:8px;">
+          <i data-lucide="fingerprint" style="width:16px;height:16px;color:var(--primary);"></i> Multi-Factor Authentication
+        </h2>
+      </div>
+      <div class="settings-section">
+        <div class="settings-row">
+          <div><div class="settings-row-label">Enable MFA</div><div class="settings-row-desc">Add an extra layer of security</div></div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="mfa-toggle" checked/>
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+          </label>
+        </div>
+        <div class="settings-row">
+          <div><div class="settings-row-label">Authenticator App</div><div class="settings-row-desc">Use Google Authenticator or similar</div></div>
+          <button class="btn-outline" id="setup-auth-btn"><i data-lucide="qr-code"></i> Setup</button>
+        </div>
+        <div class="settings-row">
+          <div><div class="settings-row-label">Backup Codes</div><div class="settings-row-desc">Download one-time emergency access codes</div></div>
+          <button class="btn-outline" id="backup-btn"><i data-lucide="download"></i> Download</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:20px;">
+
+    <!-- Notifications -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title" style="display:flex;align-items:center;gap:8px;">
+          <i data-lucide="bell" style="width:16px;height:16px;color:var(--primary);"></i> Notifications
+        </h2>
+      </div>
+      <div class="settings-section">
+        <div class="settings-row">
+          <div><div class="settings-row-label">Email Alerts</div><div class="settings-row-desc">Security events and login notifications</div></div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="notif-email" checked/>
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+          </label>
+        </div>
+        <div class="settings-row">
+          <div><div class="settings-row-label">SMS Alerts</div><div class="settings-row-desc">Text message for critical events</div></div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="notif-sms"/>
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+          </label>
+        </div>
+        <div class="settings-row">
+          <div><div class="settings-row-label">Push Notifications</div><div class="settings-row-desc">Browser and mobile push alerts</div></div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="notif-push" checked/>
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Sessions -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title" style="display:flex;align-items:center;gap:8px;">
+          <i data-lucide="monitor" style="width:16px;height:16px;color:var(--primary);"></i> Active Sessions
+        </h2>
+      </div>
+      <div class="card-body">
+        <div id="session-cards"><!-- Populated by settings.js --></div>
+      </div>
+    </div>
+
+    <!-- Break Glass (admin only) -->
+    <div class="card hidden" id="break-glass-section" style="border-color:rgba(239,68,68,0.3);">
+      <div class="card-header" style="border-color:rgba(239,68,68,0.2);">
+        <h2 class="card-title" style="display:flex;align-items:center;gap:8px;color:var(--destructive);">
+          <i data-lucide="flame" style="width:16px;height:16px;"></i> Emergency Access
+        </h2>
+      </div>
+      <div class="card-body">
+        <p class="text-sm text-muted mb-4">Break Glass access grants immediate emergency system-wide access. This action is logged and audited.</p>
+        <button class="break-glass-btn" id="break-glass-btn">
+          <i data-lucide="alert-octagon"></i>
+          Activate Break Glass — Emergency Access
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Break Glass Confirmation Modal -->
+<div class="modal-overlay hidden" id="glass-modal">
+  <div class="modal-box" style="border-color:rgba(239,68,68,0.4);">
+    <div class="modal-header">
+      <h3 class="modal-title" style="color:var(--destructive);">⚠ Emergency Access Confirmation</h3>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:14px;line-height:1.6;color:var(--text-muted);">
+        <strong style="color:var(--text);">Warning:</strong> Activating Break Glass access grants you temporary system-wide access to all patient records.<br/><br/>
+        This action is <strong style="color:var(--destructive);">permanently logged</strong> in the blockchain audit trail and will trigger immediate alerts to compliance officers.
+      </p>
+      <div style="background:var(--destructive-bg);border:1px solid rgba(239,68,68,0.3);border-radius:var(--radius-sm);padding:12px;margin-top:16px;font-size:13px;font-weight:600;color:var(--destructive);">
+        Only activate if this is a genuine clinical emergency.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" id="glass-cancel">Cancel — Go Back</button>
+      <button class="btn-primary" id="glass-confirm" style="width:auto;padding:10px 20px;background:var(--destructive);box-shadow:none;">Confirm Emergency Access</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pages/settings.js"></script>
+{% endblock %}

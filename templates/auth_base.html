@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{% block title %}GuardianHealth{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/static/css/style.css"/>
+  <script>try{if(localStorage.getItem('gh_theme')==='light')document.documentElement.classList.add('light');}catch(e){}</script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+  <div id="toast-container"></div>
+
+  <button class="auth-theme-btn" id="auth-theme-btn" title="Toggle light/dark mode">
+    <i data-lucide="sun" id="auth-theme-icon-light" class="hidden"></i>
+    <i data-lucide="moon" id="auth-theme-icon-dark"></i>
+  </button>
+
+  <div class="auth-page">
+    <div class="auth-bg">
+      <img src="/static/images/auth-bg.png" alt="Security Background" onerror="this.style.display='none'"/>
+      <div class="auth-bg-gradient"></div>
+    </div>
+
+    <div class="auth-container" style="max-width:{% block auth_max_width %}440px{% endblock %};">
+      <div class="auth-header">
+        <div class="auth-logo">
+          <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+        </div>
+        <h1 class="auth-title">GuardianHealth</h1>
+        <p class="auth-subtitle">{% block auth_subtitle %}Zero Trust Identity Security{% endblock %}</p>
+      </div>
+
+      <div class="glass-panel">
+        {% block auth_content %}{% endblock %}
+      </div>
+
+      <p class="auth-footer">{% block auth_footer %}{% endblock %}</p>
+    </div>
+  </div>
+
+  <script src="/static/js/mock-data.js"></script>
+  <script src="/static/js/auth.js"></script>
+  {% block scripts %}{% endblock %}
+  <script>
+    if (window.lucide) window.lucide.createIcons();
+
+    (function() {
+      var html = document.documentElement;
+      function applyAuthIcons() {
+        var sun  = document.getElementById('auth-theme-icon-light');
+        var moon = document.getElementById('auth-theme-icon-dark');
+        if (!sun || !moon) return;
+        if (html.classList.contains('light')) {
+          sun.classList.remove('hidden');
+          moon.classList.add('hidden');
+        } else {
+          sun.classList.add('hidden');
+          moon.classList.remove('hidden');
+        }
+        if (window.lucide) window.lucide.createIcons();
+      }
+      applyAuthIcons();
+      var btn = document.getElementById('auth-theme-btn');
+      if (btn) {
+        btn.addEventListener('click', function() {
+          html.classList.toggle('light');
+          try { localStorage.setItem('gh_theme', html.classList.contains('light') ? 'light' : 'dark'); } catch(e) {}
+          applyAuthIcons();
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

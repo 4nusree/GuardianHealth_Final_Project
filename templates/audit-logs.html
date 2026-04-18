@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Audit Logs — GuardianHealth{% endblock %}
+
+{% block sidebar_nav %}
+<a href="/admin" class="nav-link"><i data-lucide="activity"></i>Dashboard</a>
+<a href="/security" class="nav-link"><i data-lucide="shield"></i>Security Center</a>
+<a href="/iam" class="nav-link"><i data-lucide="users"></i>IAM / Access</a>
+<a href="/audit-logs" class="nav-link active"><i data-lucide="fingerprint"></i>Audit Logs</a>
+<a href="/settings" class="nav-link"><i data-lucide="settings"></i>Settings</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Blockchain Audit Log</h1>
+    <p class="page-subtitle">Immutable activity trail — every event is cryptographically verified</p>
+  </div>
+  <button class="btn-outline" id="export-btn">
+    <i data-lucide="download"></i> Export Log
+  </button>
+</div>
+
+<div class="stats-grid mb-6">
+  <div class="stat-card">
+    <div><div class="stat-label">Total Events</div><div class="stat-value" id="stat-total">—</div></div>
+    <div class="stat-icon icon-primary"><i data-lucide="database"></i></div>
+  </div>
+  <div class="stat-card">
+    <div><div class="stat-label">Verified</div><div class="stat-value" id="stat-verified">—</div></div>
+    <div class="stat-icon icon-green"><i data-lucide="shield-check"></i></div>
+  </div>
+  <div class="stat-card">
+    <div><div class="stat-label">Flagged</div><div class="stat-value" id="stat-flagged">—</div></div>
+    <div class="stat-icon icon-red"><i data-lucide="flag"></i></div>
+  </div>
+  <div class="stat-card">
+    <div><div class="stat-label">Chain Integrity</div><div class="stat-value" id="chain-status" style="font-size:14px;margin-top:6px;">Checking…</div></div>
+    <div class="stat-icon icon-primary"><i data-lucide="link"></i></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title" style="display:flex;align-items:center;gap:8px;">
+      <i data-lucide="link" style="width:16px;height:16px;color:var(--primary);"></i> Event Timeline
+    </h2>
+    <select class="form-select" style="width:160px;padding:6px 12px;font-size:13px;" id="log-filter">
+      <option value="all">All Events</option>
+      <option value="login">Logins</option>
+      <option value="record">Record Access</option>
+      <option value="admin">Admin Actions</option>
+    </select>
+  </div>
+  <div class="audit-timeline" id="log-timeline">
+    <!-- Populated by audit-logs.js -->
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pages/audit-logs.js"></script>
+{% endblock %}

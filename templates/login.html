@@ -1,0 +1,65 @@
+{% extends "auth_base.html" %}
+
+{% block title %}Sign In — GuardianHealth{% endblock %}
+{% block auth_subtitle %}Zero Trust Identity Security{% endblock %}
+{% block auth_footer %}Don't have an account? <a href="/register">Request Access</a>{% endblock %}
+
+{% block auth_content %}
+<!-- STEP 1: Credentials -->
+<div id="step-credentials">
+  <div class="form-group">
+    <label class="form-label">Email Address</label>
+    <input type="email" id="login-email" class="form-input" placeholder="name@guardian.health" autocomplete="email"/>
+    <div id="risk-indicator" style="margin-top:8px;"></div>
+  </div>
+  <div class="form-group">
+    <div class="form-label-row">
+      <label class="form-label" style="margin:0;">Password</label>
+      <a href="#" style="font-size:12px;color:var(--primary);">Forgot?</a>
+    </div>
+    <input type="password" id="login-password" class="form-input" placeholder="••••••••" autocomplete="current-password"/>
+  </div>
+  <button class="btn-primary" id="login-btn" style="margin-bottom:12px;">
+    Continue to Verify
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+  </button>
+  <button class="btn-outline w-full" id="sso-btn" style="justify-content:center;">
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    Login with SSO
+  </button>
+  <div class="auth-divider">
+    <p>Demo accounts (any password):</p>
+    <p style="margin-top:4px;color:var(--primary);font-weight:600;">admin@ &nbsp;/&nbsp; doctor@ &nbsp;/&nbsp; patient@ &nbsp;/&nbsp; staff@</p>
+    <p style="font-size:11px;margin-top:2px;">(append @guardian.health)</p>
+  </div>
+</div>
+
+<!-- STEP 2: MFA -->
+<div id="step-mfa" class="hidden">
+  <div class="mfa-icon">
+    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 2a4 4 0 0 0-4 4v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2h-2V6a4 4 0 0 0-4-4z"/><circle cx="12" cy="15" r="1"/></svg>
+  </div>
+  <h2 class="mfa-title">Two-Factor Authentication</h2>
+  <p class="mfa-subtitle">Enter the 6-digit code sent to your device</p>
+  <div class="otp-row" style="margin-bottom:20px;">
+    <input type="text" maxlength="1" class="otp-input" id="otp-0" inputmode="numeric" pattern="[0-9]*"/>
+    <input type="text" maxlength="1" class="otp-input" id="otp-1" inputmode="numeric" pattern="[0-9]*"/>
+    <input type="text" maxlength="1" class="otp-input" id="otp-2" inputmode="numeric" pattern="[0-9]*"/>
+    <input type="text" maxlength="1" class="otp-input" id="otp-3" inputmode="numeric" pattern="[0-9]*"/>
+    <input type="text" maxlength="1" class="otp-input" id="otp-4" inputmode="numeric" pattern="[0-9]*"/>
+    <input type="text" maxlength="1" class="otp-input" id="otp-5" inputmode="numeric" pattern="[0-9]*"/>
+  </div>
+  <button class="btn-primary" id="mfa-btn" style="margin-bottom:12px;">
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    Verify &amp; Login
+  </button>
+  <p class="mfa-timer">Code expires in <span id="timer-val">60</span>s &nbsp;·&nbsp; <button id="resend-btn" class="btn-ghost" style="display:inline;padding:0;">Resend Code</button></p>
+  <div style="text-align:center;margin-top:12px;">
+    <button id="back-btn" class="btn-ghost">← Back to login</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pages/login.js"></script>
+{% endblock %}

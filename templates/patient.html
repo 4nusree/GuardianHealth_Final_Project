@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}My Health Records — GuardianHealth{% endblock %}
+
+{% block sidebar_nav %}
+<a href="/patient" class="nav-link active"><i data-lucide="file-text"></i>Health Records</a>
+<a href="/audit-logs" class="nav-link"><i data-lucide="fingerprint"></i>Access History</a>
+<a href="/settings" class="nav-link"><i data-lucide="settings"></i>Settings</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">My Health Portfolio</h1>
+    <p class="page-subtitle">Manage your records and privacy controls</p>
+  </div>
+</div>
+
+<div class="grid-3 mb-6">
+  <div class="health-card primary-card">
+    <div class="health-card-icon"><i data-lucide="heart-pulse" style="color:var(--primary);width:28px;height:28px;"></i></div>
+    <div class="health-card-label primary">Blood Type</div>
+    <div class="health-card-value">O+</div>
+  </div>
+  <div class="health-card regular-card">
+    <div class="health-card-icon"><i data-lucide="activity" style="color:var(--warning);width:28px;height:28px;"></i></div>
+    <div class="health-card-label">Latest BP</div>
+    <div class="health-card-value">120/80</div>
+  </div>
+  <div class="health-card regular-card">
+    <div class="health-card-icon"><i data-lucide="pill" style="color:var(--blue);width:28px;height:28px;"></i></div>
+    <div class="health-card-label">Active Rx</div>
+    <div class="health-card-value">2</div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <!-- Documents -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title" style="display:flex;align-items:center;gap:8px;">
+        <i data-lucide="file-text" style="color:var(--primary);width:18px;height:18px;"></i> Recent Documents
+      </h2>
+    </div>
+    <div class="card-body">
+      <div class="report-item">
+        <div><div class="report-name">Comprehensive Blood Panel</div><div class="report-date">Oct 20, 2023</div></div>
+        <button class="download-btn" data-report="Comprehensive Blood Panel"><i data-lucide="download" style="width:16px;height:16px;"></i></button>
+      </div>
+      <div class="report-item">
+        <div><div class="report-name">Cardiology Visit Summary</div><div class="report-date">Oct 15, 2023</div></div>
+        <button class="download-btn" data-report="Cardiology Visit Summary"><i data-lucide="download" style="width:16px;height:16px;"></i></button>
+      </div>
+      <div class="report-item">
+        <div><div class="report-name">Annual Physical Report</div><div class="report-date">Sep 02, 2023</div></div>
+        <button class="download-btn" data-report="Annual Physical Report"><i data-lucide="download" style="width:16px;height:16px;"></i></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Provider Consent -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title" style="display:flex;align-items:center;gap:8px;">
+        <i data-lucide="shield-check" style="color:var(--primary);width:18px;height:18px;"></i> Provider Consent
+      </h2>
+    </div>
+    <div class="card-body">
+      <p class="text-sm text-muted mb-4">Control which providers can view your decrypted medical history.</p>
+      <div id="consent-list">
+        <!-- Populated by patient.js -->
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pages/patient.js"></script>
+{% endblock %}

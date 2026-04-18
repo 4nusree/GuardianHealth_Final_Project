@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{% block title %}GuardianHealth{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/static/css/style.css"/>
+  <script>try{if(localStorage.getItem('gh_theme')==='light')document.documentElement.classList.add('light');}catch(e){}</script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+  <div id="toast-container"></div>
+
+  <div class="app-layout">
+    <div class="overlay-dimmer hidden" id="sidebar-dimmer" onclick="closeSidebar()"></div>
+
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <div class="sidebar-brand-icon"><i data-lucide="shield-check"></i></div>
+        <div>
+          <div class="sidebar-brand-name">Guardian</div>
+          <div class="sidebar-brand-sub">Zero Trust</div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        {% block sidebar_nav %}{% endblock %}
+      </nav>
+
+      <div class="sidebar-user" id="sidebar-user">
+        <!-- Populated by auth.js -->
+      </div>
+    </aside>
+
+    <div class="main-content">
+      <div class="mobile-header">
+        <div class="mobile-header-brand">
+          <i data-lucide="shield-check"></i> GuardianHealth
+        </div>
+        <button class="hamburger" onclick="toggleSidebar()">
+          <i data-lucide="menu"></i>
+        </button>
+      </div>
+
+      <header class="topbar">
+        <div class="topbar-status">
+          <div class="status-dot"></div>
+          Secure Session Active
+        </div>
+        <div class="topbar-actions">
+          <button class="theme-toggle-btn" id="theme-toggle-btn" title="Toggle light/dark mode">
+            <i data-lucide="sun" id="theme-icon-light" class="hidden"></i>
+            <i data-lucide="moon" id="theme-icon-dark"></i>
+          </button>
+          <button class="notif-btn" id="notif-btn">
+            <i data-lucide="bell"></i>
+            <span class="notif-badge"></span>
+          </button>
+          <button class="topbar-user" onclick="window.location.href='/settings'">
+            <div class="topbar-avatar" id="topbar-avatar">?</div>
+            <span id="topbar-name">…</span>
+            <i data-lucide="chevron-down" style="width:14px;height:14px;color:var(--text-muted)"></i>
+          </button>
+          <button class="topbar-logout-btn" onclick="Auth.logout()" title="Back to Login">
+            <i data-lucide="log-out"></i>
+            <span>Sign Out</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="page-content">
+        <div class="page-bg-glow"></div>
+        <div class="page-inner">
+          {% block content %}{% endblock %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/mock-data.js"></script>
+  <script src="/static/js/auth.js"></script>
+  <script>
+    function toggleSidebar() {
+      document.getElementById('sidebar').classList.toggle('mobile-open');
+      document.getElementById('sidebar-dimmer').classList.toggle('hidden');
+    }
+    function closeSidebar() {
+      document.getElementById('sidebar').classList.remove('mobile-open');
+      document.getElementById('sidebar-dimmer').classList.add('hidden');
+    }
+
+    /* ── Theme toggle ─────────────────────────────────────────────────── */
+    (function() {
+      var html = document.documentElement;
+      var stored; try { stored = localStorage.getItem('gh_theme'); } catch(e) {}
+      var isLight = stored === 'light';
+      if (isLight) html.classList.add('light');
+
+      function applyIcons() {
+        var sun  = document.getElementById('theme-icon-light');
+        var moon = document.getElementById('theme-icon-dark');
+        if (!sun || !moon) return;
+        if (html.classList.contains('light')) {
+          sun.classList.remove('hidden');
+          moon.classList.add('hidden');
+        } else {
+          sun.classList.add('hidden');
+          moon.classList.remove('hidden');
+        }
+        if (window.lucide) window.lucide.createIcons();
+      }
+
+      document.addEventListener('DOMContentLoaded', function() {
+        applyIcons();
+        var btn = document.getElementById('theme-toggle-btn');
+        if (btn) {
+          btn.addEventListener('click', function() {
+            html.classList.toggle('light');
+            try { localStorage.setItem('gh_theme', html.classList.contains('light') ? 'light' : 'dark'); } catch(e) {}
+            applyIcons();
+          });
+        }
+      });
+    })();
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

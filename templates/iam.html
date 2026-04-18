@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}IAM Panel — GuardianHealth{% endblock %}
+
+{% block sidebar_nav %}
+<a href="/admin" class="nav-link"><i data-lucide="activity"></i>Dashboard</a>
+<a href="/security" class="nav-link"><i data-lucide="shield"></i>Security Center</a>
+<a href="/iam" class="nav-link active"><i data-lucide="users"></i>IAM / Access</a>
+<a href="/audit-logs" class="nav-link"><i data-lucide="fingerprint"></i>Audit Logs</a>
+<a href="/settings" class="nav-link"><i data-lucide="settings"></i>Settings</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">IAM Panel</h1>
+    <p class="page-subtitle">Manage identity roles and permissions</p>
+  </div>
+  <button class="btn-outline" id="add-user-btn">
+    <i data-lucide="user-plus"></i> Add User
+  </button>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Identity &amp; Permission Matrix</h2>
+    <div class="search-wrapper" style="width:240px;">
+      <i data-lucide="search"></i>
+      <input type="text" class="search-input" id="iam-search" placeholder="Search users..."/>
+    </div>
+  </div>
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Role</th>
+          <th>Status</th>
+          <th>Key Permissions</th>
+          <th class="td-right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="iam-tbody"><!-- Populated by iam.js --></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Edit Role Modal -->
+<div class="modal-overlay hidden" id="edit-modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 class="modal-title" id="modal-title">Edit Role &amp; Permissions</h3>
+      <button class="modal-close" id="modal-close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Role</label>
+        <select class="form-select" id="modal-role">
+          <option value="admin">Admin</option>
+          <option value="doctor">Doctor</option>
+          <option value="staff">Staff</option>
+          <option value="patient">Patient</option>
+        </select>
+      </div>
+      <div class="form-label" style="margin-bottom:10px;">Permissions</div>
+      <div id="perm-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" id="modal-cancel">Cancel</button>
+      <button class="btn-primary" id="modal-save" style="width:auto;padding:10px 24px;">Save Changes</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pages/iam.js"></script>
+{% endblock %}
