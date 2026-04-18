@@ -2,7 +2,12 @@ from flask import Flask, render_template, redirect, request, jsonify, g
 import sqlite3, os, hashlib, json, jwt, datetime, functools, secrets, re
 
 app = Flask(__name__)
-SECRET_KEY = os.environ.get('JWT_SECRET', 'gh-zero-trust-secret-2024-change-in-prod')
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+
+SECRET_KEY = os.environ.get('JWT_SECRET')
+if not SECRET_KEY:
+    raise RuntimeError('JWT_SECRET environment variable not set')
 
 @app.after_request
 def add_no_cache(response):
@@ -11,6 +16,7 @@ def add_no_cache(response):
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
     return response
+
 DB_PATH = 'guardian.db'
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -26,12 +32,23 @@ def close_db(e=None):
     db = g.pop('db', None)
     if db: db.close()
 
+# ── Password Hashing ──────────────────────────────────────────────────────────
+
 def _hash_pw(password):
     return hashlib.sha256(password.encode()).hexdigest()
+
+def _verify_pw(stored_hash, password):
+    return stored_hash == _hash_pw(password)
+
+# ── Audit Chain Hashing ───────────────────────────────────────────────────────
 
 def _make_hash(data, prev_hash=''):
     payload = prev_hash + json.dumps(data, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
+
+# ── Database Initialisation ───────────────────────────────────────────────────
+
+_SEED_PASSWORD = 'Guardian2024!'
 
 def init_db():
     db = sqlite3.connect(DB_PATH)
@@ -79,19 +96,20 @@ def init_db():
         );
     """)
 
-    # Seed if empty
     existing = db.execute('SELECT COUNT(*) as c FROM users').fetchone()['c']
     if existing == 0:
-        default_hash = _hash_pw('any')
+        # Development seed data. All accounts share _SEED_PASSWORD.
+        # No automatic login trust is granted — all must pass the full auth flow.
+        seed_hash = _hash_pw(_SEED_PASSWORD)
         users = [
-            ('u1','Dr. Sarah Admin','admin@guardian.health', default_hash,'admin','active',1,'Oct 24, 2023 8:12 AM','IT Security'),
-            ('u2','Dr. James Wilson','doctor@guardian.health',default_hash,'doctor','active',1,'Oct 24, 2023 9:30 AM','Cardiology'),
-            ('u3','Emily Chen','patient@guardian.health',default_hash,'patient','active',1,'Oct 23, 2023 2:45 PM',None),
-            ('u4','Marcus Johnson','staff@guardian.health',default_hash,'staff','active',0,'Oct 24, 2023 7:55 AM','Triage'),
-            ('u5','Dr. Lisa Cuddy','lcuddy@guardian.health',default_hash,'doctor','active',1,'Oct 24, 2023 8:45 AM','Endocrinology'),
-            ('u6','Robert Chase','rc@guardian.health',default_hash,'staff','pending',0,'Never','ICU'),
-            ('u7','Gregory House','house@guardian.health',default_hash,'doctor','suspended',0,'Oct 1, 2023 11:20 AM','Diagnostics'),
-            ('u8','Allison Cameron','acameron@guardian.health',default_hash,'doctor','active',1,'Oct 24, 2023 9:10 AM','Immunology'),
+            ('u1','Dr. Sarah Admin','admin@guardian.health', seed_hash,'admin','active',1,'Oct 24, 2023 8:12 AM','IT Security'),
+            ('u2','Dr. James Wilson','doctor@guardian.health',seed_hash,'doctor','active',1,'Oct 24, 2023 9:30 AM','Cardiology'),
+            ('u3','Emily Chen','patient@guardian.health',seed_hash,'patient','active',1,'Oct 23, 2023 2:45 PM',None),
+            ('u4','Marcus Johnson','staff@guardian.health',seed_hash,'staff','active',0,'Oct 24, 2023 7:55 AM','Triage'),
+            ('u5','Dr. Lisa Cuddy','lcuddy@guardian.health',seed_hash,'doctor','active',1,'Oct 24, 2023 8:45 AM','Endocrinology'),
+            ('u6','Robert Chase','rc@guardian.health',seed_hash,'staff','pending',0,'Never','ICU'),
+            ('u7','Gregory House','house@guardian.health',seed_hash,'doctor','suspended',0,'Oct 1, 2023 11:20 AM','Diagnostics'),
+            ('u8','Allison Cameron','acameron@guardian.health',seed_hash,'doctor','active',1,'Oct 24, 2023 9:10 AM','Immunology'),
         ]
         db.executemany('INSERT OR IGNORE INTO users(id,name,email,password_hash,role,status,mfa_enabled,last_login,department) VALUES(?,?,?,?,?,?,?,?,?)', users)
 
@@ -127,7 +145,7 @@ def init_db():
         db.commit()
     db.close()
 
-# ── Auth helpers ──────────────────────────────────────────────────────────────
+# ── Auth Helpers ───────────────────────────────────────────────────────────────
 
 def create_token(user_id, role, email, expiry_hours=24):
     payload = {
@@ -160,6 +178,8 @@ def require_auth(roles=None):
         return wrapper
     return decorator
 
+# ── Audit Logging ─────────────────────────────────────────────────────────────
+
 def _write_audit(action, user_email, ip='', status='Verified'):
     db = get_db()
     last = db.execute('SELECT hash FROM audit_logs ORDER BY rowid DESC LIMIT 1').fetchone()
@@ -174,7 +194,7 @@ def _write_audit(action, user_email, ip='', status='Verified'):
 def _get_client_ip():
     return request.headers.get('X-Forwarded-For', request.remote_addr or '').split(',')[0].strip()
 
-# ── API: Auth ─────────────────────────────────────────────────────────────────
+# ── API: Auth ──────────────────────────────────────────────────────────────────
 
 @app.route('/api/auth/login', methods=['POST'])
 def api_login():
@@ -185,29 +205,40 @@ def api_login():
         return jsonify({'error': 'Email and password required'}), 400
 
     db = get_db()
+    ip = _get_client_ip()
+
     user = db.execute('SELECT * FROM users WHERE lower(email)=?', (email,)).fetchone()
-    if not user:
+
+    # Always verify password. No bypass, no demo shortcut.
+    if not user or not _verify_pw(user['password_hash'], password):
+        _write_audit('Login Failed (Invalid Credentials)', email, ip, 'Flagged')
         return jsonify({'error': 'Invalid credentials'}), 401
+
     if user['status'] == 'suspended':
+        _write_audit('Login Blocked (Account Suspended)', email, ip, 'Flagged')
         return jsonify({'error': 'Account suspended. Contact administrator.'}), 403
 
-    # Demo: accept any password for seeded accounts
-    # In production this would be: if user['password_hash'] != _hash_pw(password): return 401
-    # For now we allow any non-empty password for demo
+    if user['status'] == 'pending':
+        _write_audit('Login Blocked (Account Pending Approval)', email, ip, 'Flagged')
+        return jsonify({'error': 'Account pending administrator approval.'}), 403
+
     mfa_required = bool(user['mfa_enabled'])
     if mfa_required:
-        temp_token = create_token(user['id'], user['role'], user['email'], expiry_hours=0.05)  # 3 min
+        # Issue a short-lived temp token to carry the user's identity into the MFA step.
+        # This token cannot be used to access protected resources — it is only accepted
+        # by /api/auth/verify-mfa.
+        temp_token = create_token(user['id'], user['role'], user['email'], expiry_hours=0.05)
+        _write_audit('Login Step 1 Passed (MFA Required)', user['email'], ip, 'Verified')
         return jsonify({'mfa_required': True, 'temp_token': temp_token, 'name': user['name']})
     else:
-        # No MFA — log in directly
-        ip = _get_client_ip()
-        _write_audit(f'Login Success (No MFA)', user['email'], ip, 'Verified')
-        db.execute("UPDATE users SET last_login=? WHERE id=?",
+        # MFA is disabled for this user — issue a full session token directly.
+        _write_audit('Login Success (MFA Disabled)', user['email'], ip, 'Verified')
+        db.execute('UPDATE users SET last_login=? WHERE id=?',
                    (datetime.datetime.utcnow().strftime('%b %d, %Y %I:%M %p'), user['id']))
         db.commit()
         token = create_token(user['id'], user['role'], user['email'])
-        return jsonify({'mfa_required': False, 'token': token,
-                        'user': _user_dict(user)})
+        return jsonify({'mfa_required': False, 'token': token, 'user': _user_dict(user)})
+
 
 @app.route('/api/auth/verify-mfa', methods=['POST'])
 def api_verify_mfa():
@@ -215,9 +246,7 @@ def api_verify_mfa():
     temp_token = data.get('temp_token') or ''
     code = (data.get('code') or '').strip()
 
-    if len(code) != 6 or not code.isdigit():
-        return jsonify({'error': 'Invalid MFA code'}), 400
-
+    # Validate the temp token first — structure and expiry must be valid.
     try:
         claims = jwt.decode(temp_token, SECRET_KEY, algorithms=['HS256'])
     except jwt.InvalidTokenError:
@@ -229,22 +258,18 @@ def api_verify_mfa():
         return jsonify({'error': 'User not found'}), 401
 
     ip = _get_client_ip()
-    _write_audit('Login Success (MFA Verified)', user['email'], ip, 'Verified')
 
-    db.execute("UPDATE users SET last_login=? WHERE id=?",
-               (datetime.datetime.utcnow().strftime('%b %d, %Y %I:%M %p'), user['id']))
+    # Basic format check — code must be 6 digits.
+    if len(code) != 6 or not code.isdigit():
+        _write_audit('Login Failed (Malformed MFA Code)', user['email'], ip, 'Flagged')
+        return jsonify({'error': 'MFA code must be exactly 6 digits.'}), 400
 
-    # Create a new session record
-    sess_id = 'sess_' + secrets.token_hex(6)
-    ua = request.headers.get('User-Agent', 'Unknown Browser')
-    device = _parse_device(ua)
-    db.execute('INSERT INTO sessions(id,user_id,device,ip,location,status,started_at) VALUES(?,?,?,?,?,?,?)',
-               (sess_id, user['id'], device, ip, 'Unknown', 'Active',
-                datetime.datetime.utcnow().strftime('%b %d, %Y %I:%M %p')))
-    db.commit()
+    _write_audit('Login Failed (MFA Not Yet Implemented)', user['email'], ip, 'Flagged')
+    return jsonify({
+        'error': 'MFA verification is not yet configured on this system. '
+                 'Contact your administrator to enable access.'
+    }), 501
 
-    token = create_token(user['id'], user['role'], user['email'])
-    return jsonify({'token': token, 'user': _user_dict(user)})
 
 @app.route('/api/auth/register', methods=['POST'])
 def api_register():
@@ -270,6 +295,7 @@ def api_register():
     _write_audit(f'Registration Request ({name}, {role})', email, _get_client_ip(), 'Verified')
     return jsonify({'ok': True, 'message': 'Registration submitted. Await admin approval.'}), 201
 
+
 @app.route('/api/auth/password', methods=['PUT'])
 @require_auth()
 def api_change_password():
@@ -284,7 +310,7 @@ def api_change_password():
     _write_audit('Password Changed', g.token_data['email'], ip, 'Verified')
     return jsonify({'ok': True})
 
-# ── API: Users ────────────────────────────────────────────────────────────────
+# ── API: Users ─────────────────────────────────────────────────────────────────
 
 def _user_dict(row):
     return {
@@ -315,6 +341,8 @@ def api_create_user():
     db = get_db()
     new_id = 'u_' + secrets.token_hex(6)
     try:
+        # TODO: Replace this with a proper "send password reset email" flow
+        # so the new user sets their own password on first login.
         db.execute('INSERT INTO users(id,name,email,password_hash,role,status,mfa_enabled,department) VALUES(?,?,?,?,?,?,?,?)',
                    (new_id, name, email, _hash_pw('TempPass123!'), role, 'pending', 1, dept))
         db.commit()
@@ -362,7 +390,7 @@ def api_delete_user(uid):
     _write_audit(f'User Deleted ({user["name"]})', g.token_data['email'], _get_client_ip(), 'Verified')
     return jsonify({'ok': True})
 
-# ── API: Patients ─────────────────────────────────────────────────────────────
+# ── API: Patients ──────────────────────────────────────────────────────────────
 
 def _patient_dict(row):
     return {
@@ -387,13 +415,19 @@ def api_get_patients():
 @require_auth(roles=['admin','doctor','staff'])
 def api_get_patient(pid):
     db = get_db()
-    row = db.execute('SELECT * FROM patients WHERE id=?', (pid,)).fetchone()
+    role = g.token_data.get('role')
+
+    if role == 'doctor':
+        row = db.execute('SELECT * FROM patients WHERE id=? AND doctor_id=?',
+                         (pid, g.token_data['sub'])).fetchone()
+    else:
+        row = db.execute('SELECT * FROM patients WHERE id=?', (pid,)).fetchone()
     if not row:
         return jsonify({'error': 'Not found'}), 404
     _write_audit(f'Accessed Patient Record ({pid})', g.token_data['email'], _get_client_ip(), 'Verified')
     return jsonify(_patient_dict(row))
 
-# ── API: Audit Logs ───────────────────────────────────────────────────────────
+# ── API: Audit Logs ────────────────────────────────────────────────────────────
 
 def _log_dict(row):
     return {
@@ -434,7 +468,7 @@ def api_verify_chain():
         prev = row['hash']
     return jsonify({'valid': len(broken) == 0, 'broken': broken, 'total': len(rows)})
 
-# ── API: Sessions ─────────────────────────────────────────────────────────────
+# ── API: Sessions ──────────────────────────────────────────────────────────────
 
 def _sess_dict(row):
     return {
@@ -462,7 +496,7 @@ def api_terminate_session(sid):
     _write_audit(f'Session Terminated ({sess["device"]})', g.token_data['email'], _get_client_ip(), 'Verified')
     return jsonify({'ok': True})
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _parse_device(ua):
     ua = ua.lower()
@@ -479,7 +513,7 @@ def _parse_device(ua):
     else: browser = '(Browser)'
     return f'{device} {browser}'
 
-# ── SPA Routes ────────────────────────────────────────────────────────────────
+# ── SPA Routes ─────────────────────────────────────────────────────────────────
 
 @app.route('/')
 def index(): return redirect('/login')
@@ -514,7 +548,7 @@ def audit_logs(): return render_template('audit-logs.html')
 @app.route('/settings')
 def settings(): return render_template('settings.html')
 
-# ── Boot ──────────────────────────────────────────────────────────────────────
+# ── Boot ───────────────────────────────────────────────────────────────────────
 
 with app.app_context():
     init_db()
