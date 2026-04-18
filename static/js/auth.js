@@ -73,6 +73,16 @@ window.Auth = {
   },
 
   logout() {
+    var token = this.getToken();
+    if (token) {
+      try {
+        fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          keepalive: true
+        }).catch(function() {});
+      } catch(e) {}
+    }
     try { localStorage.removeItem('gh_user'); localStorage.removeItem('gh_token'); } catch(e) {}
     window.location.href = '/login';
   },

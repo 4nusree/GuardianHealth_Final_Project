@@ -18,6 +18,7 @@ SECRET_KEY = os.environ.get('JWT_SECRET', 'gh-zero-trust-secret-2024-change-in-p
 _raw_db_url = (os.environ.get('SUPABASE_DB_URL') or '').strip()
 # Auto-correct common typo: /postgre → /postgres
 DATABASE_URL = _raw_db_url + 's' if _raw_db_url.endswith('/postgre') else _raw_db_url
+ACCESS_TOKEN_HOURS = float(os.environ.get('ACCESS_TOKEN_HOURS', '1'))
 MFA_OTP_TTL_MINUTES = int(os.environ.get('MFA_OTP_TTL_MINUTES', '10'))
 MFA_OTP_MAX_ATTEMPTS = int(os.environ.get('MFA_OTP_MAX_ATTEMPTS', '5'))
 MFA_OTP_RESEND_SECONDS = int(os.environ.get('MFA_OTP_RESEND_SECONDS', '60'))
@@ -236,9 +237,17 @@ def init_db():
                     ip         TEXT,
                     location   TEXT,
                     status     TEXT DEFAULT 'Active',
+                    token_jti  TEXT,
+                    expires_at TIMESTAMPTZ,
+                    last_seen_at TIMESTAMPTZ DEFAULT NOW(),
+                    terminated_at TIMESTAMPTZ,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            cur.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS token_jti TEXT")
+            cur.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
+            cur.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ DEFAULT NOW()")
+            cur.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS terminated_at TIMESTAMPTZ")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS mfa_email_otps (
                     id         TEXT PRIMARY KEY,
@@ -264,6 +273,14 @@ def init_db():
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_sessions_user_id
                 ON sessions(user_id)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sessions_status
+                ON sessions(status)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sessions_expires_at
+                ON sessions(expires_at)
             """)
             # audit_logs.user_email: used when non-admin users query their own logs.
             cur.execute("""
@@ -352,16 +369,47 @@ def init_db():
 
 # ── Auth Helpers ───────────────────────────────────────────────────────────────
 
-def create_token(user_id, role, email, expiry_hours=24, token_type='access'):
+def create_token(user_id, role=None, email=None, expiry_hours=None, token_type='access', session_id=None, jti=None, expires_at=None):
+    if expiry_hours is None:
+        expiry_hours = ACCESS_TOKEN_HOURS if token_type == 'access' else 24
+    if expires_at is None:
+        expires_at = datetime.datetime.utcnow() + datetime.timedelta(hours=expiry_hours)
     payload = {
         'sub': user_id,
-        'role': role,
-        'email': email,
         'type': token_type,
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=expiry_hours),
+        'exp': expires_at,
         'iat': datetime.datetime.utcnow(),
     }
+    if token_type != 'access' and role:
+        payload['role'] = role
+    if token_type != 'access' and email:
+        payload['email'] = email
+    if session_id:
+        payload['sid'] = session_id
+    if jti:
+        payload['jti'] = jti
     return jwt.encode(payload, SECRET_KEY, algorithm='HS256')
+
+def _create_session(db, user, ip):
+    session_id = 'sess_' + secrets.token_hex(8)
+    token_jti = 'jti_' + secrets.token_hex(12)
+    expires_at = datetime.datetime.utcnow() + datetime.timedelta(hours=ACCESS_TOKEN_HOURS)
+    with _cur(db) as cur:
+        cur.execute(
+            'INSERT INTO sessions(id,user_id,device,ip,location,status,token_jti,expires_at,last_seen_at) '
+            'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,NOW())',
+            (session_id, user['id'], _parse_device(request.headers.get('User-Agent', '')), ip, 'Unknown', 'Active', token_jti, expires_at)
+        )
+    return session_id, token_jti, expires_at
+
+def _terminate_user_sessions(db, user_id, except_session_id=None):
+    params = [user_id]
+    sql = "UPDATE sessions SET status='Terminated', terminated_at=NOW() WHERE user_id=%s AND status='Active'"
+    if except_session_id:
+        sql += ' AND id<>%s'
+        params.append(except_session_id)
+    with _cur(db) as cur:
+        cur.execute(sql, params)
 
 def require_auth(roles=None):
     def decorator(f):
@@ -379,9 +427,47 @@ def require_auth(roles=None):
                 return jsonify({'error': 'Invalid token'}), 401
             if data.get('type', 'access') != 'access':
                 return jsonify({'error': 'Invalid token'}), 401
-            if roles and data.get('role') not in roles:
+            session_id = data.get('sid')
+            if not session_id:
+                return jsonify({'error': 'Invalid session'}), 401
+            db = get_db()
+            with _cur(db) as cur:
+                cur.execute(
+                    'SELECT s.*, (s.expires_at IS NOT NULL AND s.expires_at <= NOW()) AS session_expired, '
+                    'u.email AS user_email, u.role AS user_role, u.status AS user_status, u.name AS user_name '
+                    'FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=%s',
+                    (session_id,)
+                )
+                session = cur.fetchone()
+            if not session or session['user_id'] != data.get('sub'):
+                return jsonify({'error': 'Invalid session'}), 401
+            if session['status'] != 'Active':
+                return jsonify({'error': 'Session revoked'}), 401
+            if session['session_expired']:
+                try:
+                    with _cur(db) as cur:
+                        cur.execute("UPDATE sessions SET status='Expired' WHERE id=%s AND status='Active'", (session_id,))
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    raise
+                return jsonify({'error': 'Session expired'}), 401
+            if session['user_status'] != 'active':
+                return jsonify({'error': 'Account inactive'}), 403
+            current_role = session['user_role']
+            if roles and current_role not in roles:
                 return jsonify({'error': 'Forbidden'}), 403
+            data['role'] = current_role
+            data['email'] = session['user_email']
             g.token_data = data
+            g.session = session
+            try:
+                with _cur(db) as cur:
+                    cur.execute('UPDATE sessions SET last_seen_at=NOW() WHERE id=%s', (session_id,))
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
             return f(*args, **kwargs)
         return wrapper
     return decorator
@@ -485,12 +571,13 @@ def api_login():
             with _cur(db) as cur:
                 cur.execute('UPDATE users SET last_login=%s WHERE id=%s',
                             (datetime.datetime.utcnow().strftime('%b %d, %Y %I:%M %p'), user['id']))
+            session_id, token_jti, expires_at = _create_session(db, user, ip)
             db.commit()
         except Exception:
             db.rollback()
             raise
 
-        token = create_token(user['id'], user['role'], user['email'])
+        token = create_token(user['id'], user['role'], user['email'], session_id=session_id, jti=token_jti, expires_at=expires_at)
         return jsonify({'mfa_required': False, 'token': token, 'user': _user_dict(user)})
 
     except Exception:
@@ -568,19 +655,34 @@ def api_verify_mfa():
         with _cur(db) as cur:
             cur.execute('UPDATE mfa_email_otps SET used=TRUE WHERE id=%s', (otp_row['id'],))
             cur.execute('UPDATE users SET last_login=%s WHERE id=%s', (last_login, user['id']))
-            cur.execute(
-                'INSERT INTO sessions(id,user_id,device,ip,location,status) VALUES(%s,%s,%s,%s,%s,%s)',
-                ('sess_' + secrets.token_hex(8), user['id'], _parse_device(request.headers.get('User-Agent', '')), ip, 'Unknown', 'Active')
-            )
+            session_id, token_jti, expires_at = _create_session(db, user, ip)
         db.commit()
     except Exception:
         db.rollback()
         raise
 
     user['last_login'] = last_login
-    token = create_token(user['id'], user['role'], user['email'])
+    token = create_token(user['id'], user['role'], user['email'], session_id=session_id, jti=token_jti, expires_at=expires_at)
     _write_audit('Login Success (Email MFA Verified)', user['email'], ip, 'Verified', user['id'])
     return jsonify({'token': token, 'user': _user_dict(user)})
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+@require_auth()
+def api_logout():
+    db = get_db()
+    try:
+        with _cur(db) as cur:
+            cur.execute(
+                "UPDATE sessions SET status='Terminated', terminated_at=NOW() WHERE id=%s AND user_id=%s",
+                (g.token_data['sid'], g.token_data['sub'])
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    _write_audit('Logout', g.token_data['email'], _get_client_ip(), 'Verified', g.token_data['sub'])
+    return jsonify({'ok': True})
 
 
 @app.route('/api/auth/resend-mfa', methods=['POST'])
@@ -682,6 +784,7 @@ def api_change_password():
         with _cur(db) as cur:
             cur.execute('UPDATE users SET password_hash=%s WHERE id=%s',
                         (_hash_pw(new_pw), g.token_data['sub']))
+        _terminate_user_sessions(db, g.token_data['sub'], except_session_id=g.token_data.get('sid'))
         db.commit()
     except Exception:
         db.rollback()
@@ -796,6 +899,8 @@ def api_update_user(uid):
             with _cur(db) as cur:
                 params.append(uid)
                 cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=%s", params)
+            if 'status' in data or 'role' in data:
+                _terminate_user_sessions(db, uid)
             db.commit()
         except Exception:
             db.rollback()
@@ -928,6 +1033,8 @@ def _sess_dict(row):
         'id': row['id'], 'device': row['device'], 'ip': row['ip'],
         'location': row['location'], 'status': row['status'],
         'startedAt': str(row['created_at']),
+        'expiresAt': str(row['expires_at']) if row.get('expires_at') else None,
+        'lastSeenAt': str(row['last_seen_at']) if row.get('last_seen_at') else None,
     }
 
 @app.route('/api/sessions', methods=['GET'])
@@ -951,7 +1058,7 @@ def api_terminate_session(sid):
 
     try:
         with _cur(db) as cur:
-            cur.execute("UPDATE sessions SET status='Terminated' WHERE id=%s", (sid,))
+            cur.execute("UPDATE sessions SET status='Terminated', terminated_at=NOW() WHERE id=%s", (sid,))
         db.commit()
     except Exception:
         db.rollback()
