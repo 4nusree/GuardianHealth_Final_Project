@@ -1,0 +1,147 @@
+{% extends "auth_base.html" %}
+
+{% block title %}Complete Registration — GuardianHealth{% endblock %}
+{% block auth_subtitle %}One last step to finish your account{% endblock %}
+{% block auth_max_width %}480px{% endblock %}
+{% block auth_footer %}Already have an account? <a href="/login">Sign In</a>{% endblock %}
+
+{% block auth_content %}
+<div id="role-form">
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:24px;padding:16px;background:rgba(20,184,166,0.07);border:1px solid rgba(20,184,166,0.2);border-radius:12px;">
+    {% if picture %}
+    <img src="{{ picture }}" alt="Profile" style="width:48px;height:48px;border-radius:50%;border:2px solid rgba(20,184,166,0.4);flex-shrink:0;"/>
+    {% else %}
+    <div style="width:48px;height:48px;border-radius:50%;background:var(--primary-bg-2);border:2px solid rgba(20,184,166,0.4);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:20px;font-weight:700;color:var(--primary);">{{ name[0]|upper if name else 'G' }}</div>
+    {% endif %}
+    <div>
+      <div style="font-weight:700;font-size:15px;color:var(--text);">{{ name }}</div>
+      <div style="font-size:13px;color:var(--text-muted);">{{ email }}</div>
+    </div>
+  </div>
+
+  <div style="margin-bottom:20px;">
+    <p style="font-size:14px;color:var(--text-muted);margin-bottom:20px;line-height:1.6;">
+      Your Google account is verified. Please select the role that applies to you. All registrations require <strong style="color:var(--text);">admin approval</strong> before you can access the system.
+    </p>
+  </div>
+
+  <div class="form-group">
+    <label class="form-label">Select Your Role <span style="color:var(--destructive);">*</span></label>
+    <div id="role-cards" style="display:flex;flex-direction:column;gap:10px;">
+      <label class="role-card" data-role="patient">
+        <input type="radio" name="role" value="patient" style="display:none;"/>
+        <div class="role-card-inner">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <div>
+            <div class="role-card-title">Patient</div>
+            <div class="role-card-desc">Access your health records and appointments</div>
+          </div>
+        </div>
+      </label>
+      <label class="role-card" data-role="doctor">
+        <input type="radio" name="role" value="doctor" style="display:none;"/>
+        <div class="role-card-inner">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          <div>
+            <div class="role-card-title">Doctor / Physician</div>
+            <div class="role-card-desc">Manage patients, records, and clinical data</div>
+          </div>
+        </div>
+      </label>
+      <label class="role-card" data-role="staff">
+        <input type="radio" name="role" value="staff" style="display:none;"/>
+        <div class="role-card-inner">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+          <div>
+            <div class="role-card-title">Clinical Staff</div>
+            <div class="role-card-desc">Support clinical operations and administration</div>
+          </div>
+        </div>
+      </label>
+      <label class="role-card" data-role="admin">
+        <input type="radio" name="role" value="admin" style="display:none;"/>
+        <div class="role-card-inner">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <div>
+            <div class="role-card-title">Administrator</div>
+            <div class="role-card-desc">Manage users, roles, and system configuration</div>
+          </div>
+        </div>
+      </label>
+    </div>
+    <p id="role-error" style="color:var(--destructive);font-size:13px;margin-top:8px;display:none;">Please select a role to continue.</p>
+  </div>
+
+  <button class="btn-primary" id="complete-btn" style="margin-top:4px;">
+    Submit Registration Request
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+  </button>
+</div>
+
+<div id="complete-success" class="hidden" style="text-align:center;padding:12px 0 4px;">
+  <div class="status-card">
+    <div style="width:64px;height:64px;background:var(--primary-bg);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
+      <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="none" stroke="#14b8a6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+    </div>
+    <h3>Request Submitted!</h3>
+    <p>Your registration is pending admin approval. You'll receive an email once your account is activated.</p>
+  </div>
+  <div class="pending-badge" style="margin-top:20px;display:inline-flex;">
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+    Status: Pending Admin Approval
+  </div>
+  <div style="margin-top:24px;">
+    <a href="/login" class="btn-outline" style="display:inline-flex;">← Back to Login</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var selected = null;
+
+  document.querySelectorAll('.role-card').forEach(function(card) {
+    card.addEventListener('click', function() {
+      document.querySelectorAll('.role-card').forEach(function(c) { c.classList.remove('selected'); });
+      card.classList.add('selected');
+      selected = card.dataset.role;
+      document.getElementById('role-error').style.display = 'none';
+    });
+  });
+
+  document.getElementById('complete-btn').addEventListener('click', async function() {
+    if (!selected) {
+      document.getElementById('role-error').style.display = 'block';
+      return;
+    }
+    var btn = this;
+    btn.disabled = true;
+    btn.childNodes[0].textContent = 'Submitting…';
+
+    try {
+      var res = await fetch('/api/auth/google/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: selected }),
+      });
+      var data = await res.json();
+      if (!res.ok) {
+        showToast('Error', data.error || 'Registration failed.', 'error');
+        btn.disabled = false;
+        btn.childNodes[0].textContent = 'Submit Registration Request';
+        return;
+      }
+      document.getElementById('role-form').classList.add('hidden');
+      document.getElementById('complete-success').classList.remove('hidden');
+    } catch(e) {
+      showToast('Connection Error', 'Could not submit registration. Please try again.', 'error');
+      btn.disabled = false;
+      btn.childNodes[0].textContent = 'Submit Registration Request';
+    }
+  });
+
+  if (window.lucide) window.lucide.createIcons();
+})();
+</script>
+{% endblock %}

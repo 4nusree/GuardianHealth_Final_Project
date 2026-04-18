@@ -167,6 +167,25 @@
     var existing = Auth.getUser();
     if (existing) { Auth.redirectByRole(existing.role); return; }
 
+
+    // Handle OAuth error params from Google redirect
+    var params = new URLSearchParams(window.location.search);
+    var oauthError = params.get('error');
+    if (oauthError) {
+      var msgs = {
+        google_denied: 'Google sign-in was cancelled.',
+        oauth_state: 'Sign-in session expired. Please try again.',
+        google_token: 'Could not complete Google sign-in. Please try again.',
+        google_userinfo: 'Could not retrieve your Google profile. Please try again.',
+        google_email: 'No email returned from Google. Please try again.',
+        google_not_configured: 'Google sign-in is not configured. Contact your administrator.',
+        suspended: 'Your account has been suspended. Contact your administrator.',
+        pending: 'Your account is pending administrator approval.',
+      };
+      showToast('Sign-in Error', msgs[oauthError] || 'An error occurred. Please try again.', 'error');
+      window.history.replaceState({}, '', '/login');
+    }
+
     // Risk indicator
     var emailEl = document.getElementById('login-email');
     var riskEl = document.getElementById('risk-indicator');
@@ -185,11 +204,6 @@
 
     // Credentials button
     document.getElementById('login-btn').addEventListener('click', submitCredentials);
-
-    // SSO button
-    document.getElementById('sso-btn').addEventListener('click', function() {
-      showToast('SSO Redirect', 'Connecting to enterprise identity provider...', 'default');
-    });
 
     // MFA buttons
     document.getElementById('mfa-btn').addEventListener('click', submitMfa);

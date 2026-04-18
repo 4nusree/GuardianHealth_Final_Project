@@ -2,6 +2,8 @@ from flask import Flask, render_template, redirect, request, jsonify, g, make_re
 import psycopg2, psycopg2.extras, psycopg2.errors
 import os, hashlib, hmac, json, jwt, datetime, functools, secrets, re, bcrypt, smtplib
 from email.message import EmailMessage
+from urllib.parse import urlencode
+import requests as _requests
 
 # Load .env file when running locally (no-op if the file doesn't exist or if
 # the variables are already set by the host environment, e.g. Replit Secrets).
@@ -30,6 +32,9 @@ if not DATABASE_URL:
         "  • Locally: create a .env file with SUPABASE_DB_URL=<your connection string>\n"
         "  • On Replit: add it under Secrets in the sidebar"
     )
+
+GOOGLE_CLIENT_ID     = os.environ.get('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET', '')
 
 @app.after_request
 def add_no_cache(response):
@@ -264,6 +269,7 @@ def init_db():
                 )
             """)
             cur.execute("ALTER TABLE mfa_email_otps ADD COLUMN IF NOT EXISTS temp_token_hash TEXT")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT")
 
             # ── Indexes ───────────────────────────────────────────────────────
             # users.email is already covered by the UNIQUE constraint.
@@ -1177,6 +1183,224 @@ def _parse_device(ua):
     elif 'edge' in ua:                        browser = '(Edge)'
     else:                                     browser = '(Browser)'
     return f'{device} {browser}'
+
+# ── Google OAuth ──────────────────────────────────────────────────────────────
+
+def _google_redirect_uri():
+    proto = request.headers.get('X-Forwarded-Proto') or ('https' if request.is_secure else 'http')
+    host  = request.headers.get('X-Forwarded-Host') or request.host
+    return f'{proto}://{host}/auth/google/callback'
+
+
+@app.route('/auth/google')
+def google_oauth_start():
+    if not GOOGLE_CLIENT_ID:
+        return redirect('/login?error=google_not_configured')
+    state  = secrets.token_urlsafe(16)
+    params = urlencode({
+        'client_id':     GOOGLE_CLIENT_ID,
+        'redirect_uri':  _google_redirect_uri(),
+        'response_type': 'code',
+        'scope':         'openid email profile',
+        'state':         state,
+        'access_type':   'online',
+    })
+    resp = redirect(f'https://accounts.google.com/o/oauth2/v2/auth?{params}')
+    resp.set_cookie('google_oauth_state', state, max_age=600, httponly=True,
+                    samesite='Lax', secure=request.is_secure)
+    return resp
+
+
+@app.route('/auth/google/callback')
+def google_oauth_callback():
+    if request.args.get('error'):
+        return redirect('/login?error=google_denied')
+
+    state_cookie = request.cookies.get('google_oauth_state', '')
+    state_param  = request.args.get('state', '')
+    if not state_cookie or not hmac.compare_digest(state_cookie, state_param):
+        return redirect('/login?error=oauth_state')
+
+    code = request.args.get('code', '')
+    if not code:
+        return redirect('/login?error=google_denied')
+
+    try:
+        token_resp = _requests.post('https://oauth2.googleapis.com/token', data={
+            'code':          code,
+            'client_id':     GOOGLE_CLIENT_ID,
+            'client_secret': GOOGLE_CLIENT_SECRET,
+            'redirect_uri':  _google_redirect_uri(),
+            'grant_type':    'authorization_code',
+        }, timeout=10)
+    except Exception:
+        return redirect('/login?error=google_token')
+
+    if not token_resp.ok:
+        return redirect('/login?error=google_token')
+
+    access_token = token_resp.json().get('access_token', '')
+    if not access_token:
+        return redirect('/login?error=google_token')
+
+    try:
+        userinfo_resp = _requests.get(
+            'https://www.googleapis.com/oauth2/v2/userinfo',
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=10
+        )
+    except Exception:
+        return redirect('/login?error=google_userinfo')
+
+    if not userinfo_resp.ok:
+        return redirect('/login?error=google_userinfo')
+
+    userinfo  = userinfo_resp.json()
+    google_id = userinfo.get('id', '')
+    email     = (userinfo.get('email') or '').strip().lower()
+    name      = userinfo.get('name', '') or email.split('@')[0]
+    picture   = userinfo.get('picture', '')
+
+    if not email or not google_id:
+        return redirect('/login?error=google_email')
+
+    db = get_db()
+    ip = _get_client_ip()
+
+    with _cur(db) as cur:
+        cur.execute(
+            'SELECT * FROM users WHERE lower(email)=%s OR google_id=%s LIMIT 1',
+            (email, google_id)
+        )
+        user = cur.fetchone()
+
+    def _clear_state(resp):
+        resp.delete_cookie('google_oauth_state', path='/')
+        return resp
+
+    if user:
+        if not user.get('google_id'):
+            try:
+                with _cur(db) as cur:
+                    cur.execute('UPDATE users SET google_id=%s WHERE id=%s', (google_id, user['id']))
+                db.commit()
+            except Exception:
+                db.rollback()
+
+        if user['status'] == 'suspended':
+            return _clear_state(redirect('/login?error=suspended'))
+        if user['status'] == 'pending':
+            return _clear_state(redirect('/login?error=pending'))
+
+        try:
+            last_login = datetime.datetime.utcnow().strftime('%b %d, %Y %I:%M %p')
+            with _cur(db) as cur:
+                cur.execute('UPDATE users SET last_login=%s WHERE id=%s', (last_login, user['id']))
+            session_id, token_jti, csrf_token, expires_at = _create_session(db, user, ip)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+        token      = create_token(user['id'], user['role'], user['email'],
+                                   session_id=session_id, jti=token_jti, expires_at=expires_at)
+        user_dict  = _user_dict(user)
+        user_dict['lastLogin'] = last_login
+
+        _write_audit('Login Success (Google SSO)', user['email'], ip, 'Verified', user['id'])
+
+        resp = make_response(render_template(
+            'google_success.html',
+            user=json.dumps(user_dict),
+            token=token,
+            csrf_token=csrf_token,
+            role=user['role']
+        ))
+        resp.set_cookie(AUTH_COOKIE_NAME, token,
+                        max_age=int(ACCESS_TOKEN_HOURS * 3600),
+                        path='/', samesite='Lax', secure=request.is_secure, httponly=True)
+        return _clear_state(resp)
+
+    else:
+        pending_token = jwt.encode({
+            'type':      'google_pending',
+            'google_id': google_id,
+            'email':     email,
+            'name':      name,
+            'picture':   picture,
+            'exp':       datetime.datetime.utcnow() + datetime.timedelta(minutes=15),
+            'iat':       datetime.datetime.utcnow(),
+        }, SECRET_KEY, algorithm='HS256')
+
+        resp = redirect('/auth/google/complete')
+        resp.set_cookie('google_pending', pending_token, max_age=900, httponly=True,
+                        samesite='Lax', secure=request.is_secure)
+        return _clear_state(resp)
+
+
+@app.route('/auth/google/complete')
+def google_oauth_complete_page():
+    pending_token = request.cookies.get('google_pending', '')
+    if not pending_token:
+        return redirect('/register')
+    try:
+        claims = jwt.decode(pending_token, SECRET_KEY, algorithms=['HS256'])
+    except jwt.InvalidTokenError:
+        return redirect('/register')
+    if claims.get('type') != 'google_pending':
+        return redirect('/register')
+    return render_template('google_complete.html',
+                            name=claims.get('name', ''),
+                            email=claims.get('email', ''),
+                            picture=claims.get('picture', ''))
+
+
+@app.route('/api/auth/google/complete', methods=['POST'])
+def api_google_complete():
+    pending_token = request.cookies.get('google_pending', '')
+    if not pending_token:
+        return jsonify({'error': 'No pending registration. Please sign in with Google again.'}), 400
+    try:
+        claims = jwt.decode(pending_token, SECRET_KEY, algorithms=['HS256'])
+    except jwt.InvalidTokenError:
+        return jsonify({'error': 'Session expired. Please sign in with Google again.'}), 401
+    if claims.get('type') != 'google_pending':
+        return jsonify({'error': 'Invalid session.'}), 400
+
+    data = request.get_json(silent=True) or {}
+    role = (data.get('role') or '').strip()
+    if role not in ('admin', 'doctor', 'patient', 'staff'):
+        return jsonify({'error': 'Please select a valid role.'}), 400
+
+    google_id = claims['google_id']
+    email     = claims['email']
+    name      = claims['name']
+
+    db     = get_db()
+    new_id = 'u_' + secrets.token_hex(6)
+    ip     = _get_client_ip()
+
+    try:
+        with _cur(db) as cur:
+            cur.execute(
+                'INSERT INTO users(id,name,email,password_hash,role,status,mfa_enabled,google_id) '
+                'VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
+                (new_id, name, email, '!google_sso!', role, 'pending', 1, google_id)
+            )
+        db.commit()
+    except psycopg2.errors.UniqueViolation:
+        db.rollback()
+        return jsonify({'error': 'An account with this email already exists.'}), 409
+    except Exception:
+        db.rollback()
+        raise
+
+    _write_audit(f'Google Registration Request ({name}, {role})', email, ip, 'Verified')
+
+    resp = make_response(jsonify({'ok': True}), 201)
+    resp.delete_cookie('google_pending', path='/')
+    return resp
+
 
 # ── SPA Routes ─────────────────────────────────────────────────────────────────
 
