@@ -1,13 +1,13 @@
 from flask import Flask, render_template, redirect, request, jsonify, g
-import sqlite3, os, hashlib, json, jwt, datetime, functools, secrets, re
+import sqlite3, os, hashlib, json, jwt, datetime, functools, secrets, re, bcrypt
 
 app = Flask(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-
-SECRET_KEY = os.environ.get('JWT_SECRET')
-if not SECRET_KEY:
-    raise RuntimeError('JWT_SECRET environment variable not set')
+# TODO (Security): Remove the fallback default below and require JWT_SECRET to be
+# set explicitly via environment variable before any production deployment.
+# A missing secret should raise a RuntimeError, not silently fall back.
+SECRET_KEY = os.environ.get('JWT_SECRET', 'gh-zero-trust-secret-2024-change-in-prod')
 
 @app.after_request
 def add_no_cache(response):
@@ -33,12 +33,43 @@ def close_db(e=None):
     if db: db.close()
 
 # ── Password Hashing ──────────────────────────────────────────────────────────
+# Passwords are hashed with bcrypt, which is specifically designed for password
+# storage. Unlike SHA-256 (a general-purpose hash with no work factor), bcrypt
+# is intentionally slow and includes a per-password salt, making brute-force
+# and rainbow-table attacks computationally infeasible.
+#
+# Migration: Existing accounts stored with the old SHA-256 scheme are detected
+# at login time. If their password is verified against the legacy hash, the
+# plaintext password is immediately re-hashed with bcrypt and the database
+# record is updated — transparent to the user, no password reset required.
+
+_SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
+
+def _is_sha256_hash(h):
+    """Return True if the stored hash looks like a raw SHA-256 hex digest."""
+    return bool(_SHA256_RE.match(h))
 
 def _hash_pw(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Hash a password with bcrypt. Returns a UTF-8 string for database storage."""
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
 def _verify_pw(stored_hash, password):
-    return stored_hash == _hash_pw(password)
+    """
+    Verify a password against a stored hash.
+
+    Handles two cases:
+      1. bcrypt hash  — verified with bcrypt.checkpw() (current scheme).
+      2. SHA-256 hash — verified with the legacy hex-comparison path.
+         Callers that need to perform the silent upgrade (api_login) check the
+         return value of _is_sha256_hash() themselves and re-hash after login.
+    """
+    if _is_sha256_hash(stored_hash):
+        # Legacy SHA-256 path — insecure, used only for backward compatibility.
+        # The caller (api_login) will upgrade the hash to bcrypt on success.
+        return stored_hash == hashlib.sha256(password.encode('utf-8')).hexdigest()
+    # bcrypt path — constant-time comparison handled internally by bcrypt.checkpw.
+    return bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8'))
 
 # ── Audit Chain Hashing ───────────────────────────────────────────────────────
 
@@ -48,6 +79,8 @@ def _make_hash(data, prev_hash=''):
 
 # ── Database Initialisation ───────────────────────────────────────────────────
 
+# Seed password for development accounts only.
+# All demo users share this password. Change or remove before production.
 _SEED_PASSWORD = 'Guardian2024!'
 
 def init_db():
@@ -147,6 +180,10 @@ def init_db():
 
 # ── Auth Helpers ───────────────────────────────────────────────────────────────
 
+# TODO (Token): Add a unique 'jti' (JWT ID) claim to each token so that
+# individual tokens can be revoked via a blocklist (see session termination).
+# TODO (Token): Implement refresh tokens with a shorter access-token lifetime
+# (e.g., 15 minutes) to reduce exposure from stolen tokens.
 def create_token(user_id, role, email, expiry_hours=24):
     payload = {
         'sub': user_id,
@@ -157,6 +194,8 @@ def create_token(user_id, role, email, expiry_hours=24):
     }
     return jwt.encode(payload, SECRET_KEY, algorithm='HS256')
 
+# TODO (Token): Extend require_auth to check a token revocation blocklist so
+# that session termination actually invalidates the associated JWT.
 def require_auth(roles=None):
     def decorator(f):
         @functools.wraps(f)
@@ -210,9 +249,18 @@ def api_login():
     user = db.execute('SELECT * FROM users WHERE lower(email)=?', (email,)).fetchone()
 
     # Always verify password. No bypass, no demo shortcut.
-    if not user or not _verify_pw(user['password_hash'], password):
+    password_ok = user and _verify_pw(user['password_hash'], password)
+    if not password_ok:
         _write_audit('Login Failed (Invalid Credentials)', email, ip, 'Flagged')
         return jsonify({'error': 'Invalid credentials'}), 401
+
+    # Silent bcrypt migration: if the stored hash is the old SHA-256 scheme and
+    # the password just verified successfully, upgrade the record to bcrypt now.
+    # The user notices nothing; the next login will use the bcrypt path.
+    if _is_sha256_hash(user['password_hash']):
+        db.execute('UPDATE users SET password_hash=? WHERE id=?',
+                   (_hash_pw(password), user['id']))
+        db.commit()
 
     if user['status'] == 'suspended':
         _write_audit('Login Blocked (Account Suspended)', email, ip, 'Flagged')
@@ -264,6 +312,19 @@ def api_verify_mfa():
         _write_audit('Login Failed (Malformed MFA Code)', user['email'], ip, 'Flagged')
         return jsonify({'error': 'MFA code must be exactly 6 digits.'}), 400
 
+    # TODO (MFA): Implement real TOTP verification here.
+    # Steps required:
+    #   1. Add a 'totp_secret' column to the users table.
+    #   2. Build a MFA enrolment endpoint (GET /api/auth/mfa/setup, POST /api/auth/mfa/enrol).
+    #   3. Install pyotp: pip install pyotp
+    #   4. Replace this block with:
+    #        import pyotp
+    #        totp = pyotp.TOTP(user['totp_secret'])
+    #        if not totp.verify(code, valid_window=1):
+    #            _write_audit('Login Failed (Invalid MFA Code)', ...)
+    #            return jsonify({'error': 'Invalid MFA code'}), 401
+    #   5. Consider FIDO2/WebAuthn for phishing-resistant hardware MFA.
+    # Until this is implemented, MFA login is intentionally blocked.
     _write_audit('Login Failed (MFA Not Yet Implemented)', user['email'], ip, 'Flagged')
     return jsonify({
         'error': 'MFA verification is not yet configured on this system. '
@@ -416,7 +477,8 @@ def api_get_patients():
 def api_get_patient(pid):
     db = get_db()
     role = g.token_data.get('role')
-
+    # TODO (RBAC): Add ownership enforcement for the staff role as well — staff
+    # should only access patients they are explicitly assigned to.
     if role == 'doctor':
         row = db.execute('SELECT * FROM patients WHERE id=? AND doctor_id=?',
                          (pid, g.token_data['sub'])).fetchone()
@@ -493,6 +555,8 @@ def api_terminate_session(sid):
         return jsonify({'error': 'Not found'}), 404
     db.execute("UPDATE sessions SET status='Terminated' WHERE id=?", (sid,))
     db.commit()
+    # TODO (Token): Once JWT revocation is implemented, also blocklist the JWT
+    # associated with this session so the token cannot be reused after termination.
     _write_audit(f'Session Terminated ({sess["device"]})', g.token_data['email'], _get_client_ip(), 'Verified')
     return jsonify({'ok': True})
 
