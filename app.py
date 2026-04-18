@@ -45,30 +45,58 @@ def close_db(e=None):
 
 _SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
 
+def _ensure_str(value):
+    """Guarantee a value is a UTF-8 str. Raises TypeError for unexpected types.
+
+    bcrypt functions return bytes; this is the single choke-point that converts
+    them to str before anything is written to SQLite or compared as a string.
+    Accepting only bytes or str prevents silent corruption from other types.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode('utf-8')
+    raise TypeError(f'Expected str or bytes, got {type(value).__name__}')
+
 def _is_sha256_hash(h):
     """Return True if the stored hash looks like a raw SHA-256 hex digest."""
-    return bool(_SHA256_RE.match(h))
+    return bool(_SHA256_RE.match(_ensure_str(h)))
 
 def _hash_pw(password):
-    """Hash a password with bcrypt. Returns a UTF-8 string for database storage."""
+    """Hash a password with bcrypt. Always returns a UTF-8 str for database storage.
+
+    bcrypt.hashpw() returns bytes; _ensure_str() converts them to str so that
+    SQLite never receives a bytes object — which would be stored as a BLOB and
+    break every subsequent string comparison.
+    """
     salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+    hashed_bytes = bcrypt.hashpw(_ensure_str(password).encode('utf-8'), salt)
+    return _ensure_str(hashed_bytes)  # str, never bytes
 
 def _verify_pw(stored_hash, password):
     """
     Verify a password against a stored hash.
 
+    Both arguments are normalised to str via _ensure_str() before use, so
+    callers can safely pass either str or bytes without risking a type mismatch
+    or accidental byte comparison.
+
     Handles two cases:
       1. bcrypt hash  — verified with bcrypt.checkpw() (current scheme).
       2. SHA-256 hash — verified with the legacy hex-comparison path.
-         Callers that need to perform the silent upgrade (api_login) check the
-         return value of _is_sha256_hash() themselves and re-hash after login.
+         Callers that need to perform the silent upgrade (api_login) check
+         _is_sha256_hash() themselves and re-hash after a successful login.
     """
+    stored_hash = _ensure_str(stored_hash)
+    password    = _ensure_str(password)
+
     if _is_sha256_hash(stored_hash):
         # Legacy SHA-256 path — insecure, used only for backward compatibility.
         # The caller (api_login) will upgrade the hash to bcrypt on success.
         return stored_hash == hashlib.sha256(password.encode('utf-8')).hexdigest()
-    # bcrypt path — constant-time comparison handled internally by bcrypt.checkpw.
+
+    # bcrypt path — encode back to bytes only at the point bcrypt.checkpw needs them.
+    # Constant-time comparison is handled internally by bcrypt.checkpw.
     return bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8'))
 
 # ── Audit Chain Hashing ───────────────────────────────────────────────────────
