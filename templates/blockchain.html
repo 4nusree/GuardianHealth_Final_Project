@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block title %}Blockchain Explorer — GuardianHealth{% endblock %}
+
+{% block sidebar_nav %}
+<a href="/admin" class="nav-link"><i data-lucide="activity"></i>Dashboard</a>
+<a href="/security" class="nav-link"><i data-lucide="shield"></i>Security Center</a>
+<a href="/iam" class="nav-link"><i data-lucide="users"></i>IAM / Access</a>
+<a href="/audit-logs" class="nav-link"><i data-lucide="fingerprint"></i>Audit Logs</a>
+<a href="/blockchain" class="nav-link active"><i data-lucide="link"></i>Blockchain</a>
+<a href="/settings" class="nav-link"><i data-lucide="settings"></i>Settings</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Blockchain Explorer</h1>
+        <p class="page-subtitle">Immutable audit ledger — ECDSA-signed, proof-of-work anchored blocks</p>
+    </div>
+    <button class="btn-outline" id="verify-btn">
+        <i data-lucide="shield-check"></i> Verify Chain
+    </button>
+</div>
+
+<div class="stats-grid mb-6">
+    <div class="stat-card">
+        <div>
+            <div class="stat-label">Total Blocks</div>
+            <div class="stat-value" id="stat-blocks">—</div>
+        </div>
+        <div class="stat-icon icon-primary"><i data-lucide="layers"></i></div>
+    </div>
+    <div class="stat-card">
+        <div>
+            <div class="stat-label">Chain Status</div>
+            <div class="stat-value" id="stat-chain-status" style="font-size:14px;margin-top:6px;">Checking…</div>
+        </div>
+        <div class="stat-icon icon-primary"><i data-lucide="shield-check"></i></div>
+    </div>
+    <div class="stat-card">
+        <div>
+            <div class="stat-label">Anchor</div>
+            <div class="stat-value" id="stat-anchor" style="font-size:14px;margin-top:6px;">Checking…</div>
+        </div>
+        <div class="stat-icon icon-primary"><i data-lucide="anchor"></i></div>
+    </div>
+    <div class="stat-card">
+        <div>
+            <div class="stat-label">Difficulty</div>
+            <div class="stat-value" id="stat-difficulty">3</div>
+        </div>
+        <div class="stat-icon icon-primary"><i data-lucide="cpu"></i></div>
+    </div>
+</div>
+
+<div class="card mb-6" id="issues-card" style="display:none;">
+    <div class="card-header">
+        <h2 class="card-title" style="display:flex;align-items:center;gap:8px;color:var(--danger);">
+            <i data-lucide="alert-triangle" style="width:16px;height:16px;"></i> Chain Issues Detected
+        </h2>
+    </div>
+    <div id="issues-list" style="padding:16px;"></div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title" style="display:flex;align-items:center;gap:8px;">
+            <i data-lucide="link" style="width:16px;height:16px;color:var(--primary);"></i> Block Chain
+        </h2>
+        <span id="pub-key-badge"
+            style="font-size:11px;color:var(--text-muted);font-family:monospace;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+    </div>
+    <div id="block-list" style="padding:8px 0;">
+        <div style="text-align:center;padding:40px;color:var(--text-muted);">Loading blocks…</div>
+    </div>
+    <div style="padding:12px 16px;border-top:1px solid var(--border);" id="load-more-wrap">
+        <button class="btn-outline" id="load-more-btn" style="width:100%;display:none;">Load more blocks</button>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pages/blockchain.js"></script>
+{% endblock %}

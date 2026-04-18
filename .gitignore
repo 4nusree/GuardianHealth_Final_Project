@@ -13,3 +13,5 @@ instance/
 .DS_Store
 .idea/
 .vscode/
+blockchain/signing_key.pem
+blockchain/anchor.txt

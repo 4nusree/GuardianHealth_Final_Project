@@ -1,6 +1,6 @@
 from flask import Flask, render_template, redirect, request, jsonify, g, make_response
 import psycopg2, psycopg2.extras, psycopg2.errors
-import os, hashlib, hmac, json, jwt, datetime, functools, secrets, re, bcrypt, smtplib
+import os, hashlib, hmac, json, jwt, datetime, functools, secrets, re, bcrypt, smtplib, base64
 from email.message import EmailMessage
 from urllib.parse import urlencode
 import requests as _requests
@@ -270,6 +270,28 @@ def init_db():
             """)
             cur.execute("ALTER TABLE mfa_email_otps ADD COLUMN IF NOT EXISTS temp_token_hash TEXT")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT")
+            cur.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS block_index INTEGER")
+            cur.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS block_hash TEXT")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS blockchain (
+                    block_index     INTEGER PRIMARY KEY,
+                    timestamp       TEXT NOT NULL,
+                    data            JSONB NOT NULL,
+                    previous_hash   TEXT NOT NULL,
+                    nonce           INTEGER NOT NULL DEFAULT 0,
+                    difficulty_used INTEGER NOT NULL DEFAULT 3,
+                    hash            TEXT NOT NULL,
+                    signature       TEXT
+                )
+            """)
+            cur.execute("""
+                CREATE OR REPLACE RULE no_update_blockchain AS
+                    ON UPDATE TO blockchain DO INSTEAD NOTHING
+            """)
+            cur.execute("""
+                CREATE OR REPLACE RULE no_delete_blockchain AS
+                    ON DELETE TO blockchain DO INSTEAD NOTHING
+            """)
 
             # ── Indexes ───────────────────────────────────────────────────────
             # users.email is already covered by the UNIQUE constraint.
@@ -510,7 +532,7 @@ def require_auth(roles=None):
 
 def _write_audit(action, user_email, ip='', status='Verified', user_id=None):
     """
-    Append a tamper-evident audit log entry.
+    Append a tamper-evident audit log entry to PostgreSQL and the blockchain.
     Rolls back and re-raises on any DB error so the caller's transaction
     is not left in an aborted state.
     """
@@ -519,14 +541,34 @@ def _write_audit(action, user_email, ip='', status='Verified', user_id=None):
         with _cur(db) as cur:
             cur.execute('SELECT hash FROM audit_logs ORDER BY timestamp DESC LIMIT 1')
             last = cur.fetchone()
-            prev = last['hash'] if last else ''
+            prev   = last['hash'] if last else ''
             log_id = 'log_' + secrets.token_hex(8)
-            ts = datetime.datetime.utcnow().isoformat(sep=' ', timespec='seconds')
-            h = _make_hash({'id': log_id, 'action': action, 'user': user_email, 'ip': ip, 'ts': ts}, prev)
+            ts     = datetime.datetime.utcnow().isoformat(sep=' ', timespec='seconds')
+            h      = _make_hash({'id': log_id, 'action': action, 'user': user_email, 'ip': ip, 'ts': ts}, prev)
+
+            block_index = None
+            block_hash  = None
+            if _blockchain is not None:
+                try:
+                    block = _blockchain.add_block({
+                        'audit_id':    log_id,
+                        'action':      action,
+                        'user_email':  user_email,
+                        'ip':          ip,
+                        'status':      status,
+                        'ts':          ts,
+                        'db_row_hash': h,
+                    })
+                    block_index = block.index
+                    block_hash  = block.hash
+                except Exception as bc_err:
+                    print(f'[Blockchain] Warning: failed to add block — {bc_err}')
+
             cur.execute(
-                'INSERT INTO audit_logs(id,hash,prev_hash,action,user_email,user_id,ip,status,timestamp) '
-                'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)',
-                (log_id, h, prev, action, user_email, user_id, ip, status, ts)
+                'INSERT INTO audit_logs'
+                '(id,hash,prev_hash,action,user_email,user_id,ip,status,timestamp,block_index,block_hash) '
+                'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+                (log_id, h, prev, action, user_email, user_id, ip, status, ts, block_index, block_hash)
             )
         db.commit()
     except Exception:
@@ -1046,9 +1088,16 @@ def api_get_patient(pid):
 
 def _log_dict(row):
     return {
-        'id': row['id'], 'hash': row['hash'], 'prevHash': row['prev_hash'],
-        'action': row['action'], 'user': row['user_email'],
-        'ip': row['ip'], 'status': row['status'], 'timestamp': str(row['timestamp']),
+        'id':         row['id'],
+        'hash':       row['hash'],
+        'prevHash':   row['prev_hash'],
+        'action':     row['action'],
+        'user':       row['user_email'],
+        'ip':         row['ip'],
+        'status':     row['status'],
+        'timestamp':  str(row['timestamp']),
+        'blockIndex': row['block_index'] if row.get('block_index') is not None else None,
+        'blockHash':  row['block_hash']  if row.get('block_hash')  else None,
     }
 
 @app.route('/api/audit-logs', methods=['GET'])
@@ -1093,7 +1142,54 @@ def api_verify_chain():
             broken.append(row['id'])
         prev = row['hash']
 
-    return jsonify({'valid': len(broken) == 0, 'broken': broken, 'total': len(rows)})
+    bc_summary = None
+    if _blockchain is not None:
+        bc_valid, bc_issues = _blockchain.is_chain_valid()
+        bc_summary = {
+            'valid':        bc_valid,
+            'total_blocks': len(_blockchain.chain),
+            'issues':       bc_issues,
+            'anchor_intact': _blockchain._verify_anchor(),
+        }
+
+    return jsonify({
+        'valid':       len(broken) == 0,
+        'broken':      broken,
+        'total':       len(rows),
+        'blockchain':  bc_summary,
+    })
+
+
+@app.route('/api/blockchain/chain', methods=['GET'])
+@require_auth(roles=['admin'])
+def api_blockchain_chain():
+    if _blockchain is None:
+        return jsonify({'error': 'Blockchain not initialised'}), 503
+    limit  = min(int(request.args.get('limit', 50)), 200)
+    offset = int(request.args.get('offset', 0))
+    chain  = _blockchain.get_chain_dict()
+    total  = len(chain)
+    page   = list(reversed(chain))[offset: offset + limit]
+    return jsonify({
+        'blocks':       page,
+        'total':        total,
+        'public_key':   _blockchain.get_public_key_pem(),
+    })
+
+
+@app.route('/api/blockchain/verify', methods=['GET'])
+@require_auth(roles=['admin'])
+def api_blockchain_verify():
+    if _blockchain is None:
+        return jsonify({'error': 'Blockchain not initialised'}), 503
+    valid, issues = _blockchain.is_chain_valid()
+    return jsonify({
+        'valid':         valid,
+        'total_blocks':  len(_blockchain.chain),
+        'issues':        issues,
+        'anchor_intact': _blockchain._verify_anchor(),
+        'message':       'Chain intact — all blocks verified' if valid else 'TAMPERING DETECTED',
+    })
 
 # ── API: Sessions ──────────────────────────────────────────────────────────────
 
@@ -1527,10 +1623,22 @@ def audit_logs(): return render_template('audit-logs.html')
 @app.route('/settings')
 def settings(): return render_template('settings.html')
 
+@app.route('/blockchain')
+def blockchain_explorer(): return render_template('blockchain.html')
+
 # ── Boot ───────────────────────────────────────────────────────────────────────
 
 with app.app_context():
     init_db()
+
+# Initialise the blockchain singleton (after DB tables are created)
+_blockchain = None
+try:
+    from blockchain import HealthcareBlockchain as _HC
+    _blockchain = _HC(DATABASE_URL)
+    print(f'[Blockchain] Ready — {len(_blockchain.chain)} block(s) loaded')
+except Exception as _bc_init_err:
+    print(f'[Blockchain] WARNING: could not initialise — {_bc_init_err}')
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

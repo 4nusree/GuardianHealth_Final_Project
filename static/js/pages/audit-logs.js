@@ -6,28 +6,28 @@ document.addEventListener('DOMContentLoaded', async function() {
   if (!user) return;
   Auth.populateUI(user);
 
-  // Role-adaptive sidebar nav
   var navMap = {
     admin: [
-      { href: '/admin', label: 'Dashboard', icon: 'activity' },
-      { href: '/security', label: 'Security Center', icon: 'shield' },
-      { href: '/iam', label: 'IAM / Access', icon: 'users' },
-      { href: '/audit-logs', label: 'Audit Logs', icon: 'fingerprint', active: true },
-      { href: '/settings', label: 'Settings', icon: 'settings' },
+      { href: '/admin',      label: 'Dashboard',      icon: 'activity' },
+      { href: '/security',   label: 'Security Center', icon: 'shield' },
+      { href: '/iam',        label: 'IAM / Access',    icon: 'users' },
+      { href: '/audit-logs', label: 'Audit Logs',      icon: 'fingerprint', active: true },
+      { href: '/blockchain', label: 'Blockchain',      icon: 'link' },
+      { href: '/settings',   label: 'Settings',        icon: 'settings' },
     ],
     doctor: [
-      { href: '/doctor', label: 'My Patients', icon: 'stethoscope' },
-      { href: '/audit-logs', label: 'Audit Logs', icon: 'fingerprint', active: true },
-      { href: '/settings', label: 'Settings', icon: 'settings' },
+      { href: '/doctor',     label: 'My Patients',     icon: 'stethoscope' },
+      { href: '/audit-logs', label: 'Audit Logs',      icon: 'fingerprint', active: true },
+      { href: '/settings',   label: 'Settings',        icon: 'settings' },
     ],
     patient: [
-      { href: '/patient', label: 'Health Records', icon: 'file-text' },
-      { href: '/audit-logs', label: 'Access History', icon: 'fingerprint', active: true },
-      { href: '/settings', label: 'Settings', icon: 'settings' },
+      { href: '/patient',    label: 'Health Records',  icon: 'file-text' },
+      { href: '/audit-logs', label: 'Access History',  icon: 'fingerprint', active: true },
+      { href: '/settings',   label: 'Settings',        icon: 'settings' },
     ],
     staff: [
-      { href: '/staff', label: 'Assigned Tasks', icon: 'check-square' },
-      { href: '/settings', label: 'Settings', icon: 'settings' },
+      { href: '/staff',      label: 'Assigned Tasks',  icon: 'check-square' },
+      { href: '/settings',   label: 'Settings',        icon: 'settings' },
     ],
   };
 
@@ -37,8 +37,18 @@ document.addEventListener('DOMContentLoaded', async function() {
       '<i data-lucide="' + l.icon + '"></i>' + l.label + '</a>';
   }).join('');
 
-  var allLogs = [];
+  var allLogs  = [];
   var chainValid = null;
+  var bcSummary  = null;
+
+  function blockBadge(log) {
+    if (log.blockIndex === null || log.blockIndex === undefined) return '';
+    return '<div style="font-size:10px;color:var(--primary);margin-bottom:2px;display:flex;align-items:center;gap:4px;">' +
+      '<i data-lucide="link" style="width:10px;height:10px;"></i>' +
+      'Block #' + log.blockIndex + ' &nbsp;·&nbsp; ' +
+      '<span style="font-family:monospace;">' + (log.blockHash ? log.blockHash.slice(0, 14) + '…' : '—') + '</span>' +
+    '</div>';
+  }
 
   function renderTimeline(filtered) {
     var list = filtered || allLogs;
@@ -51,6 +61,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         '<div style="flex:1;min-width:0;">' +
           '<div class="audit-hash"># ' + log.hash.slice(0,32) + '…</div>' +
           (log.prevHash ? '<div style="font-size:10px;color:var(--text-muted);margin-bottom:2px;">⛓ linked to ' + log.prevHash.slice(0,16) + '…</div>' : '') +
+          blockBadge(log) +
           '<div class="audit-action">' + log.action + '</div>' +
           '<div class="audit-meta">' +
             '<span><i data-lucide="user" style="width:12px;height:12px;"></i>' + log.user + '</span>' +
@@ -67,22 +78,25 @@ document.addEventListener('DOMContentLoaded', async function() {
       '</div>';
     }).join('');
 
-    document.getElementById('stat-total').textContent = list.length;
-    document.getElementById('stat-verified').textContent = list.filter(function(l) { return l.status === 'Verified'; }).length;
-    document.getElementById('stat-flagged').textContent = list.filter(function(l) { return l.status === 'Flagged'; }).length;
+    document.getElementById('stat-total').textContent     = list.length;
+    document.getElementById('stat-verified').textContent  = list.filter(function(l) { return l.status === 'Verified'; }).length;
+    document.getElementById('stat-flagged').textContent   = list.filter(function(l) { return l.status === 'Flagged'; }).length;
+    var onChain = list.filter(function(l) { return l.blockIndex !== null && l.blockIndex !== undefined; }).length;
+    var onChainEl = document.getElementById('stat-on-chain');
+    if (onChainEl) onChainEl.textContent = onChain;
 
-    // Chain integrity badge (admin only)
     var chainEl = document.getElementById('chain-status');
     if (chainEl && user.role === 'admin' && chainValid !== null) {
-      chainEl.innerHTML = chainValid
+      var bcOk = bcSummary ? bcSummary.valid : true;
+      var allOk = chainValid && bcOk;
+      chainEl.innerHTML = allOk
         ? '<span class="badge badge-verified" style="display:flex;align-items:center;gap:4px;"><i data-lucide="shield-check" style="width:11px;height:11px;"></i> Chain Intact</span>'
-        : '<span class="badge badge-flagged" style="display:flex;align-items:center;gap:4px;"><i data-lucide="alert-triangle" style="width:11px;height:11px;"></i> Chain Broken</span>';
+        : '<span class="badge badge-flagged" style="display:flex;align-items:center;gap:4px;"><i data-lucide="alert-triangle" style="width:11px;height:11px;"></i> Tampering Detected</span>';
     }
 
     if (window.lucide) window.lucide.createIcons();
   }
 
-  // Load data
   try {
     var result = await Auth.get('/api/audit-logs?limit=100');
     if (result) allLogs = result.logs || [];
@@ -90,11 +104,13 @@ document.addEventListener('DOMContentLoaded', async function() {
     showToast('Error', 'Failed to load audit logs: ' + e.message, 'error');
   }
 
-  // Verify chain integrity (admin only)
   if (user.role === 'admin') {
     try {
       var verify = await Auth.get('/api/audit-logs/verify');
-      if (verify) chainValid = verify.valid;
+      if (verify) {
+        chainValid = verify.valid;
+        bcSummary  = verify.blockchain || null;
+      }
     } catch(e) { /* non-critical */ }
   }
 
@@ -103,9 +119,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (v === 'all') { renderTimeline(allLogs); return; }
     var filtered = allLogs.filter(function(l) {
       var t = l.action.toLowerCase();
-      if (v === 'login') return t.includes('login');
+      if (v === 'login')  return t.includes('login');
       if (v === 'record') return t.includes('record') || t.includes('accessed') || t.includes('downloaded') || t.includes('patient');
-      if (v === 'admin') return t.includes('role') || t.includes('modified') || t.includes('user') || t.includes('enforce');
+      if (v === 'admin')  return t.includes('role') || t.includes('modified') || t.includes('user') || t.includes('enforce');
       return true;
     });
     renderTimeline(filtered);
@@ -113,9 +129,13 @@ document.addEventListener('DOMContentLoaded', async function() {
 
   document.getElementById('export-btn').addEventListener('click', function() {
     if (!allLogs.length) { showToast('No Data', 'No logs to export.', 'error'); return; }
-    var csv = ['ID,Action,User,IP,Status,Timestamp,Hash'];
+    var csv = ['ID,Action,User,IP,Status,Timestamp,DB Hash,Block Index,Block Hash'];
     allLogs.forEach(function(l) {
-      csv.push([l.id, '"'+l.action+'"', l.user, l.ip, l.status, l.timestamp, l.hash].join(','));
+      csv.push([
+        l.id, '"' + l.action + '"', l.user, l.ip, l.status, l.timestamp, l.hash,
+        l.blockIndex !== null && l.blockIndex !== undefined ? l.blockIndex : '',
+        l.blockHash || '',
+      ].join(','));
     });
     var blob = new Blob([csv.join('\n')], { type: 'text/csv' });
     var a = document.createElement('a');
