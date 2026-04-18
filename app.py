@@ -2,6 +2,14 @@ from flask import Flask, render_template, redirect, request, jsonify, g
 import psycopg2, psycopg2.extras, psycopg2.errors
 import os, hashlib, json, jwt, datetime, functools, secrets, re, bcrypt
 
+# Load .env file when running locally (no-op if the file doesn't exist or if
+# the variables are already set by the host environment, e.g. Replit Secrets).
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+except ImportError:
+    pass
+
 app = Flask(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -9,6 +17,13 @@ SECRET_KEY = os.environ.get('JWT_SECRET', 'gh-zero-trust-secret-2024-change-in-p
 _raw_db_url = (os.environ.get('SUPABASE_DB_URL') or '').strip()
 # Auto-correct common typo: /postgre → /postgres
 DATABASE_URL = _raw_db_url + 's' if _raw_db_url.endswith('/postgre') else _raw_db_url
+
+if not DATABASE_URL:
+    raise RuntimeError(
+        "SUPABASE_DB_URL is not set.\n"
+        "  • Locally: create a .env file with SUPABASE_DB_URL=<your connection string>\n"
+        "  • On Replit: add it under Secrets in the sidebar"
+    )
 
 @app.after_request
 def add_no_cache(response):
