@@ -85,7 +85,7 @@
         showStep('mfa');
       } else {
         // No MFA required — direct login
-        Auth.setSession(data.user, data.token);
+        Auth.setSession(data.user, data.token, data.csrf_token);
         showToast('Access Granted', 'Welcome back, ' + data.user.name + '!', 'success');
         setTimeout(function() { Auth.redirectByRole(data.user.role); }, 600);
       }
@@ -121,7 +121,7 @@
         return;
       }
 
-      Auth.setSession(data.user, data.token);
+      Auth.setSession(data.user, data.token, data.csrf_token);
       showToast('Access Granted', 'Welcome back, ' + data.user.name + '!', 'success');
       setTimeout(function() { Auth.redirectByRole(data.user.role); }, 600);
     } catch(e) {
@@ -165,7 +165,7 @@
   document.addEventListener('DOMContentLoaded', function() {
     // Redirect if already logged in
     var existing = Auth.getUser();
-    if (existing && Auth.getToken()) { Auth.redirectByRole(existing.role); return; }
+    if (existing) { Auth.redirectByRole(existing.role); return; }
 
     // Risk indicator
     var emailEl = document.getElementById('login-email');

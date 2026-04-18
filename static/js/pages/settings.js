@@ -45,20 +45,49 @@ document.addEventListener('DOMContentLoaded', async function() {
   var mfaToggle = document.getElementById('mfa-toggle');
   if (mfaToggle) mfaToggle.checked = !!user.mfaEnabled;
 
-  // Load active sessions from API
-  try {
-    var sessions = await Auth.get('/api/sessions') || [];
+  var sessions = [];
+
+  function renderSessions() {
     var activeSessions = sessions.filter(function(s) { return s.status === 'Active'; });
     document.getElementById('session-cards').innerHTML = activeSessions.length
       ? activeSessions.map(function(s) {
           return '<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:10px;">' +
-            '<div style="font-size:13px;font-weight:600;">' + s.device + '</div>' +
-            '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + (s.location || 'Unknown') + ' · ' + s.ip + '</div>' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">' +
+              '<div>' +
+                '<div style="font-size:13px;font-weight:600;">' + s.device + (s.current ? ' · Current' : '') + '</div>' +
+                '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + (s.location || 'Unknown') + ' · ' + s.ip + '</div>' +
+                '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Expires: ' + (s.expiresAt || 'Unknown') + '</div>' +
+              '</div>' +
+              '<button class="btn-outline session-revoke-btn" data-session-id="' + s.id + '" style="width:auto;padding:8px 10px;">' + (s.current ? 'Logout' : 'Revoke') + '</button>' +
+            '</div>' +
           '</div>';
         }).join('')
       : '<p style="color:var(--text-muted);font-size:13px;">No active sessions found.</p>';
+
+    document.querySelectorAll('.session-revoke-btn').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        try {
+          await Auth.del('/api/auth/sessions/' + btn.dataset.sessionId);
+          var revoked = sessions.find(function(s) { return s.id === btn.dataset.sessionId; });
+          if (revoked && revoked.current) {
+            Auth.logoutLocalOnly();
+            return;
+          }
+          sessions = sessions.map(function(s) { return s.id === btn.dataset.sessionId ? Object.assign({}, s, { status: 'Terminated' }) : s; });
+          renderSessions();
+          showToast('Session Revoked', 'The selected session can no longer access the app.', 'success');
+        } catch(e) {
+          showToast('Error', e.message, 'error');
+        }
+      });
+    });
+  }
+
+  // Load active sessions from API
+  try {
+    sessions = await Auth.get('/api/auth/sessions') || [];
+    renderSessions();
   } catch(e) {
-    // Fallback for non-admin roles (no access to sessions endpoint)
     document.getElementById('session-cards').innerHTML =
       '<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:10px;">' +
         '<div style="font-size:13px;font-weight:600;">Current Session</div>' +
@@ -75,7 +104,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (nw !== conf) { showToast('Mismatch', 'New passwords do not match.', 'error'); return; }
     if (nw.length < 6) { showToast('Too Short', 'Password must be at least 6 characters.', 'error'); return; }
     try {
-      await Auth.put('/api/auth/password', { new_password: nw });
+      await Auth.put('/api/auth/password', { current_password: cur, new_password: nw });
       showToast('Password Updated', 'Your password has been changed securely.', 'success');
       document.getElementById('cur-pass').value = '';
       document.getElementById('new-pass').value = '';
@@ -110,6 +139,18 @@ document.addEventListener('DOMContentLoaded', async function() {
   document.getElementById('backup-btn').addEventListener('click', function() {
     showToast('Codes Generated', 'Backup codes downloaded securely.', 'success');
   });
+
+  var logoutAllBtn = document.getElementById('logout-all-btn');
+  if (logoutAllBtn) {
+    logoutAllBtn.addEventListener('click', async function() {
+      try {
+        await Auth.post('/api/auth/logout-all', {});
+        Auth.logoutLocalOnly();
+      } catch(e) {
+        showToast('Error', e.message, 'error');
+      }
+    });
+  }
 
   // Notification toggles
   ['notif-email','notif-sms','notif-push'].forEach(function(id) {

@@ -10,22 +10,28 @@ window.Auth = {
     try { return localStorage.getItem('gh_token') || ''; } catch { return ''; }
   },
 
-  setSession(user, token) {
+  getCsrfToken() {
+    try { return localStorage.getItem('gh_csrf') || ''; } catch { return ''; }
+  },
+
+  setSession(user, token, csrfToken) {
     try {
       localStorage.setItem('gh_user', JSON.stringify(user));
-      localStorage.setItem('gh_token', token);
+      if (token) localStorage.setItem('gh_token', token);
+      else localStorage.removeItem('gh_token');
+      if (csrfToken) localStorage.setItem('gh_csrf', csrfToken);
     } catch(e) {}
   },
 
   requireAuth() {
     const user = this.getUser();
-    if (!user || !this.getToken()) { window.location.href = '/login'; return null; }
+    if (!user) { window.location.href = '/login'; return null; }
     return user;
   },
 
   requireRole(role) {
     const user = this.getUser();
-    if (!user || !this.getToken()) { window.location.href = '/login'; return null; }
+    if (!user) { window.location.href = '/login'; return null; }
     if (role && user.role !== role) {
       this.redirectByRole(user.role);
       return null;
@@ -35,7 +41,7 @@ window.Auth = {
 
   requireAnyRole(roles) {
     const user = this.getUser();
-    if (!user || !this.getToken()) { window.location.href = '/login'; return null; }
+    if (!user) { window.location.href = '/login'; return null; }
     if (!roles.includes(user.role)) {
       this.redirectByRole(user.role);
       return null;
@@ -73,17 +79,22 @@ window.Auth = {
   },
 
   logout() {
-    var token = this.getToken();
-    if (token) {
+    var csrfToken = this.getCsrfToken();
+    if (csrfToken) {
       try {
         fetch('/api/auth/logout', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
           keepalive: true
         }).catch(function() {});
       } catch(e) {}
     }
-    try { localStorage.removeItem('gh_user'); localStorage.removeItem('gh_token'); } catch(e) {}
+    try { localStorage.removeItem('gh_user'); localStorage.removeItem('gh_token'); localStorage.removeItem('gh_csrf'); } catch(e) {}
+    window.location.href = '/login';
+  },
+
+  logoutLocalOnly() {
+    try { localStorage.removeItem('gh_user'); localStorage.removeItem('gh_token'); localStorage.removeItem('gh_csrf'); } catch(e) {}
     window.location.href = '/login';
   },
 
@@ -94,17 +105,23 @@ window.Auth = {
 
   /* ── API Client ────────────────────────────────────────────────────────── */
   async api(method, path, body) {
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+    const token = this.getToken();
+    if (token) headers.Authorization = 'Bearer ' + token;
+    if (method !== 'GET') {
+      const csrfToken = this.getCsrfToken();
+      if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+    }
     const opts = {
       method,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + this.getToken(),
-      },
+      headers,
     };
     if (body !== undefined) opts.body = JSON.stringify(body);
     const res = await fetch(path, opts);
     if (res.status === 401) {
-      this.logout();
+      this.logoutLocalOnly();
       return null;
     }
     const data = await res.json().catch(() => ({}));

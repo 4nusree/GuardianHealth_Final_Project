@@ -1,4 +1,4 @@
-from flask import Flask, render_template, redirect, request, jsonify, g
+from flask import Flask, render_template, redirect, request, jsonify, g, make_response
 import psycopg2, psycopg2.extras, psycopg2.errors
 import os, hashlib, hmac, json, jwt, datetime, functools, secrets, re, bcrypt, smtplib
 from email.message import EmailMessage
@@ -19,6 +19,7 @@ _raw_db_url = (os.environ.get('SUPABASE_DB_URL') or '').strip()
 # Auto-correct common typo: /postgre → /postgres
 DATABASE_URL = _raw_db_url + 's' if _raw_db_url.endswith('/postgre') else _raw_db_url
 ACCESS_TOKEN_HOURS = float(os.environ.get('ACCESS_TOKEN_HOURS', '1'))
+AUTH_COOKIE_NAME = 'gh_access_token'
 MFA_OTP_TTL_MINUTES = int(os.environ.get('MFA_OTP_TTL_MINUTES', '10'))
 MFA_OTP_MAX_ATTEMPTS = int(os.environ.get('MFA_OTP_MAX_ATTEMPTS', '5'))
 MFA_OTP_RESEND_SECONDS = int(os.environ.get('MFA_OTP_RESEND_SECONDS', '60'))
@@ -238,6 +239,7 @@ def init_db():
                     location   TEXT,
                     status     TEXT DEFAULT 'Active',
                     token_jti  TEXT,
+                    csrf_token TEXT,
                     expires_at TIMESTAMPTZ,
                     last_seen_at TIMESTAMPTZ DEFAULT NOW(),
                     terminated_at TIMESTAMPTZ,
@@ -245,6 +247,7 @@ def init_db():
                 )
             """)
             cur.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS token_jti TEXT")
+            cur.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS csrf_token TEXT")
             cur.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
             cur.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ DEFAULT NOW()")
             cur.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS terminated_at TIMESTAMPTZ")
@@ -393,14 +396,31 @@ def create_token(user_id, role=None, email=None, expiry_hours=None, token_type='
 def _create_session(db, user, ip):
     session_id = 'sess_' + secrets.token_hex(8)
     token_jti = 'jti_' + secrets.token_hex(12)
+    csrf_token = secrets.token_urlsafe(32)
     expires_at = datetime.datetime.utcnow() + datetime.timedelta(hours=ACCESS_TOKEN_HOURS)
     with _cur(db) as cur:
         cur.execute(
-            'INSERT INTO sessions(id,user_id,device,ip,location,status,token_jti,expires_at,last_seen_at) '
-            'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,NOW())',
-            (session_id, user['id'], _parse_device(request.headers.get('User-Agent', '')), ip, 'Unknown', 'Active', token_jti, expires_at)
+            'INSERT INTO sessions(id,user_id,device,ip,location,status,token_jti,csrf_token,expires_at,last_seen_at) '
+            'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())',
+            (session_id, user['id'], _parse_device(request.headers.get('User-Agent', '')), ip, 'Unknown', 'Active', token_jti, csrf_token, expires_at)
         )
-    return session_id, token_jti, expires_at
+    return session_id, token_jti, csrf_token, expires_at
+
+def _session_cookie_response(payload, token=None, clear=False, status=200):
+    resp = make_response(jsonify(payload), status)
+    if clear:
+        resp.delete_cookie(AUTH_COOKIE_NAME, path='/', samesite='Lax', secure=request.is_secure, httponly=True)
+    if token:
+        resp.set_cookie(
+            AUTH_COOKIE_NAME,
+            token,
+            max_age=int(ACCESS_TOKEN_HOURS * 3600),
+            path='/',
+            samesite='Lax',
+            secure=request.is_secure,
+            httponly=True,
+        )
+    return resp
 
 def _terminate_user_sessions(db, user_id, except_session_id=None):
     params = [user_id]
@@ -416,9 +436,13 @@ def require_auth(roles=None):
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
             auth = request.headers.get('Authorization', '')
-            if not auth.startswith('Bearer '):
+            token_source = 'header' if auth.startswith('Bearer ') else 'cookie'
+            if auth.startswith('Bearer '):
+                token = auth[7:]
+            else:
+                token = request.cookies.get(AUTH_COOKIE_NAME, '')
+            if not token:
                 return jsonify({'error': 'No token'}), 401
-            token = auth[7:]
             try:
                 data = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
             except jwt.ExpiredSignatureError:
@@ -454,6 +478,10 @@ def require_auth(roles=None):
                 return jsonify({'error': 'Session expired'}), 401
             if session['user_status'] != 'active':
                 return jsonify({'error': 'Account inactive'}), 403
+            if token_source == 'cookie' and request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+                csrf = request.headers.get('X-CSRF-Token', '')
+                if not csrf or not session.get('csrf_token') or not hmac.compare_digest(csrf, session['csrf_token']):
+                    return jsonify({'error': 'Invalid CSRF token'}), 403
             current_role = session['user_role']
             if roles and current_role not in roles:
                 return jsonify({'error': 'Forbidden'}), 403
@@ -571,14 +599,14 @@ def api_login():
             with _cur(db) as cur:
                 cur.execute('UPDATE users SET last_login=%s WHERE id=%s',
                             (datetime.datetime.utcnow().strftime('%b %d, %Y %I:%M %p'), user['id']))
-            session_id, token_jti, expires_at = _create_session(db, user, ip)
+            session_id, token_jti, csrf_token, expires_at = _create_session(db, user, ip)
             db.commit()
         except Exception:
             db.rollback()
             raise
 
         token = create_token(user['id'], user['role'], user['email'], session_id=session_id, jti=token_jti, expires_at=expires_at)
-        return jsonify({'mfa_required': False, 'token': token, 'user': _user_dict(user)})
+        return _session_cookie_response({'mfa_required': False, 'user': _user_dict(user), 'csrf_token': csrf_token}, token=token)
 
     except Exception:
         db.rollback()
@@ -655,7 +683,7 @@ def api_verify_mfa():
         with _cur(db) as cur:
             cur.execute('UPDATE mfa_email_otps SET used=TRUE WHERE id=%s', (otp_row['id'],))
             cur.execute('UPDATE users SET last_login=%s WHERE id=%s', (last_login, user['id']))
-            session_id, token_jti, expires_at = _create_session(db, user, ip)
+            session_id, token_jti, csrf_token, expires_at = _create_session(db, user, ip)
         db.commit()
     except Exception:
         db.rollback()
@@ -664,7 +692,7 @@ def api_verify_mfa():
     user['last_login'] = last_login
     token = create_token(user['id'], user['role'], user['email'], session_id=session_id, jti=token_jti, expires_at=expires_at)
     _write_audit('Login Success (Email MFA Verified)', user['email'], ip, 'Verified', user['id'])
-    return jsonify({'token': token, 'user': _user_dict(user)})
+    return _session_cookie_response({'user': _user_dict(user), 'csrf_token': csrf_token}, token=token)
 
 
 @app.route('/api/auth/logout', methods=['POST'])
@@ -682,7 +710,31 @@ def api_logout():
         db.rollback()
         raise
     _write_audit('Logout', g.token_data['email'], _get_client_ip(), 'Verified', g.token_data['sub'])
-    return jsonify({'ok': True})
+    return _session_cookie_response({'ok': True}, clear=True)
+
+
+@app.route('/api/auth/logout-all', methods=['POST'])
+@require_auth()
+def api_logout_all():
+    db = get_db()
+    try:
+        _terminate_user_sessions(db, g.token_data['sub'])
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    _write_audit('Logout All Sessions', g.token_data['email'], _get_client_ip(), 'Verified', g.token_data['sub'])
+    return _session_cookie_response({'ok': True}, clear=True)
+
+
+@app.route('/api/auth/me', methods=['GET'])
+@require_auth()
+def api_me():
+    db = get_db()
+    with _cur(db) as cur:
+        cur.execute('SELECT * FROM users WHERE id=%s', (g.token_data['sub'],))
+        user = cur.fetchone()
+    return jsonify({'user': _user_dict(user)})
 
 
 @app.route('/api/auth/resend-mfa', methods=['POST'])
@@ -775,11 +827,20 @@ def api_register():
 @require_auth()
 def api_change_password():
     data   = request.get_json(silent=True) or {}
+    current_pw = data.get('current_password') or ''
     new_pw = data.get('new_password') or ''
-    if len(new_pw) < 6:
-        return jsonify({'error': 'Password must be at least 6 characters'}), 400
+    if not current_pw:
+        return jsonify({'error': 'Current password is required'}), 400
+    if len(new_pw) < 12:
+        return jsonify({'error': 'Password must be at least 12 characters'}), 400
 
     db = get_db()
+    with _cur(db) as cur:
+        cur.execute('SELECT password_hash FROM users WHERE id=%s', (g.token_data['sub'],))
+        user = cur.fetchone()
+    if not user or not _verify_pw(user['password_hash'], current_pw):
+        _write_audit('Password Change Failed (Invalid Current Password)', g.token_data['email'], _get_client_ip(), 'Flagged', g.token_data['sub'])
+        return jsonify({'error': 'Current password is incorrect'}), 401
     try:
         with _cur(db) as cur:
             cur.execute('UPDATE users SET password_hash=%s WHERE id=%s',
@@ -806,6 +867,7 @@ def api_update_own_mfa():
     try:
         with _cur(db) as cur:
             cur.execute('UPDATE users SET mfa_enabled=%s WHERE id=%s', (enabled, g.token_data['sub']))
+        _terminate_user_sessions(db, g.token_data['sub'], except_session_id=g.token_data.get('sid'))
         db.commit()
     except Exception:
         db.rollback()
@@ -899,7 +961,7 @@ def api_update_user(uid):
             with _cur(db) as cur:
                 params.append(uid)
                 cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=%s", params)
-            if 'status' in data or 'role' in data:
+            if 'status' in data or 'role' in data or 'mfaEnabled' in data:
                 _terminate_user_sessions(db, uid)
             db.commit()
         except Exception:
@@ -923,6 +985,7 @@ def api_delete_user(uid):
         return jsonify({'error': 'User not found'}), 404
 
     try:
+        _terminate_user_sessions(db, uid)
         with _cur(db) as cur:
             cur.execute('DELETE FROM users WHERE id=%s', (uid,))
         db.commit()
@@ -1035,6 +1098,7 @@ def _sess_dict(row):
         'startedAt': str(row['created_at']),
         'expiresAt': str(row['expires_at']) if row.get('expires_at') else None,
         'lastSeenAt': str(row['last_seen_at']) if row.get('last_seen_at') else None,
+        'current': row.get('id') == getattr(g, 'token_data', {}).get('sid'),
     }
 
 @app.route('/api/sessions', methods=['GET'])
@@ -1045,6 +1109,36 @@ def api_get_sessions():
         cur.execute('SELECT * FROM sessions ORDER BY created_at DESC LIMIT 50')
         rows = cur.fetchall()
     return jsonify([_sess_dict(r) for r in rows])
+
+@app.route('/api/auth/sessions', methods=['GET'])
+@require_auth()
+def api_get_own_sessions():
+    db = get_db()
+    with _cur(db) as cur:
+        cur.execute('SELECT * FROM sessions WHERE user_id=%s ORDER BY created_at DESC LIMIT 25', (g.token_data['sub'],))
+        rows = cur.fetchall()
+    return jsonify([_sess_dict(r) for r in rows])
+
+@app.route('/api/auth/sessions/<sid>', methods=['DELETE'])
+@require_auth()
+def api_terminate_own_session(sid):
+    db = get_db()
+    with _cur(db) as cur:
+        cur.execute('SELECT * FROM sessions WHERE id=%s AND user_id=%s', (sid, g.token_data['sub']))
+        sess = cur.fetchone()
+    if not sess:
+        return jsonify({'error': 'Not found'}), 404
+    try:
+        with _cur(db) as cur:
+            cur.execute("UPDATE sessions SET status='Terminated', terminated_at=NOW() WHERE id=%s AND user_id=%s", (sid, g.token_data['sub']))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    _write_audit(f'Own Session Terminated ({sess["device"]})', g.token_data['email'], _get_client_ip(), 'Verified', g.token_data['sub'])
+    if sid == g.token_data.get('sid'):
+        return _session_cookie_response({'ok': True}, clear=True)
+    return jsonify({'ok': True})
 
 @app.route('/api/sessions/<sid>', methods=['DELETE'])
 @require_auth(roles=['admin'])
