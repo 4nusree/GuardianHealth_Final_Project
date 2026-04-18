@@ -1186,10 +1186,70 @@ def _parse_device(ua):
 
 # ── Google OAuth ──────────────────────────────────────────────────────────────
 
+# Simple in-memory rate limiter for the OAuth callback: max 10 attempts per IP
+# per 5-minute window. Resets on restart (acceptable for this use-case).
+_oauth_rate: dict = {}
+_OAUTH_RATE_MAX    = 10
+_OAUTH_RATE_WINDOW = 300  # seconds
+
+
+def _oauth_check_rate(ip: str) -> bool:
+    """Return True if the request is allowed, False if rate-limited."""
+    now   = datetime.datetime.utcnow().timestamp()
+    entry = _oauth_rate.get(ip)
+    if entry is None or now - entry['ts'] > _OAUTH_RATE_WINDOW:
+        _oauth_rate[ip] = {'ts': now, 'count': 1}
+        return True
+    entry['count'] += 1
+    return entry['count'] <= _OAUTH_RATE_MAX
+
+
 def _google_redirect_uri():
     proto = request.headers.get('X-Forwarded-Proto') or ('https' if request.is_secure else 'http')
     host  = request.headers.get('X-Forwarded-Host') or request.host
     return f'{proto}://{host}/auth/google/callback'
+
+
+def _verify_google_id_token(id_token: str) -> dict | None:
+    """
+    Validate Google ID token via Google's tokeninfo endpoint.
+    Checks: signature (server-side), aud, iss, exp, email_verified.
+    Returns the claims dict on success, None on any failure.
+    """
+    try:
+        resp = _requests.get(
+            'https://oauth2.googleapis.com/tokeninfo',
+            params={'id_token': id_token},
+            timeout=10
+        )
+    except Exception:
+        return None
+
+    if not resp.ok:
+        return None
+
+    claims = resp.json()
+
+    # ① Verify audience matches our client ID
+    if claims.get('aud') != GOOGLE_CLIENT_ID:
+        return None
+
+    # ② Verify issuer is Google
+    if claims.get('iss') not in ('accounts.google.com', 'https://accounts.google.com'):
+        return None
+
+    # ③ Token must not be expired (Google already checks this, belt-and-suspenders)
+    try:
+        if int(claims.get('exp', 0)) < int(datetime.datetime.utcnow().timestamp()):
+            return None
+    except (ValueError, TypeError):
+        return None
+
+    # ④ Email must be verified by Google
+    if claims.get('email_verified') not in (True, 'true'):
+        return None
+
+    return claims
 
 
 @app.route('/auth/google')
@@ -1213,18 +1273,29 @@ def google_oauth_start():
 
 @app.route('/auth/google/callback')
 def google_oauth_callback():
+    ip = _get_client_ip()
+
+    # ── Rate limiting ──────────────────────────────────────────────────────────
+    if not _oauth_check_rate(ip):
+        _write_audit('Google SSO Failed (Rate Limited)', 'unknown', ip, 'Flagged')
+        return redirect('/login?error=rate_limited')
+
     if request.args.get('error'):
+        _write_audit('Google SSO Denied (User Cancelled)', 'unknown', ip, 'Flagged')
         return redirect('/login?error=google_denied')
 
+    # ── CSRF state check ───────────────────────────────────────────────────────
     state_cookie = request.cookies.get('google_oauth_state', '')
     state_param  = request.args.get('state', '')
     if not state_cookie or not hmac.compare_digest(state_cookie, state_param):
+        _write_audit('Google SSO Failed (Invalid State)', 'unknown', ip, 'Flagged')
         return redirect('/login?error=oauth_state')
 
     code = request.args.get('code', '')
     if not code:
         return redirect('/login?error=google_denied')
 
+    # ── Exchange code for tokens ───────────────────────────────────────────────
     try:
         token_resp = _requests.post('https://oauth2.googleapis.com/token', data={
             'code':          code,
@@ -1237,49 +1308,63 @@ def google_oauth_callback():
         return redirect('/login?error=google_token')
 
     if not token_resp.ok:
+        _write_audit('Google SSO Failed (Token Exchange Error)', 'unknown', ip, 'Flagged')
         return redirect('/login?error=google_token')
 
-    access_token = token_resp.json().get('access_token', '')
-    if not access_token:
+    token_data = token_resp.json()
+    id_token   = token_data.get('id_token', '')
+
+    if not id_token:
+        _write_audit('Google SSO Failed (No ID Token)', 'unknown', ip, 'Flagged')
         return redirect('/login?error=google_token')
 
-    try:
-        userinfo_resp = _requests.get(
-            'https://www.googleapis.com/oauth2/v2/userinfo',
-            headers={'Authorization': f'Bearer {access_token}'},
-            timeout=10
-        )
-    except Exception:
-        return redirect('/login?error=google_userinfo')
+    # ── Validate ID token: signature, aud, iss, exp, email_verified ───────────
+    claims = _verify_google_id_token(id_token)
+    if not claims:
+        _write_audit('Google SSO Failed (Invalid ID Token)', 'unknown', ip, 'Flagged')
+        return redirect('/login?error=google_token')
 
-    if not userinfo_resp.ok:
-        return redirect('/login?error=google_userinfo')
-
-    userinfo  = userinfo_resp.json()
-    google_id = userinfo.get('id', '')
-    email     = (userinfo.get('email') or '').strip().lower()
-    name      = userinfo.get('name', '') or email.split('@')[0]
-    picture   = userinfo.get('picture', '')
+    # All identity data comes exclusively from the verified token — never from
+    # query params, frontend, or unverified sources.
+    google_id = claims.get('sub', '')
+    email     = (claims.get('email') or '').strip().lower()
+    name      = claims.get('name', '') or email.split('@')[0]
+    picture   = claims.get('picture', '')
 
     if not email or not google_id:
+        _write_audit('Google SSO Failed (Missing Claims)', 'unknown', ip, 'Flagged')
         return redirect('/login?error=google_email')
 
     db = get_db()
-    ip = _get_client_ip()
 
     with _cur(db) as cur:
-        cur.execute(
-            'SELECT * FROM users WHERE lower(email)=%s OR google_id=%s LIMIT 1',
-            (email, google_id)
-        )
+        cur.execute('SELECT * FROM users WHERE google_id=%s LIMIT 1', (google_id,))
         user = cur.fetchone()
 
-    def _clear_state(resp):
-        resp.delete_cookie('google_oauth_state', path='/')
-        return resp
+        if not user:
+            # Look up by email only if no google_id match
+            cur.execute('SELECT * FROM users WHERE lower(email)=%s LIMIT 1', (email,))
+            user = cur.fetchone()
+
+    def _clear_state(r):
+        r.delete_cookie('google_oauth_state', path='/')
+        return r
 
     if user:
-        if not user.get('google_id'):
+        # ── Account linking protection ─────────────────────────────────────────
+        # If a password-based account exists for this email, do NOT silently link
+        # it to Google. Require the user to log in with their password.
+        # Only allow Google login if the account was originally created via Google
+        # (password_hash == '!google_sso!') or already has a google_id attached.
+        already_linked = bool(user.get('google_id'))
+        is_google_account = user.get('password_hash') == '!google_sso!'
+
+        if not already_linked and not is_google_account:
+            _write_audit('Google SSO Blocked (Account Linking Attempt)', email, ip, 'Flagged', user['id'])
+            return _clear_state(redirect('/login?error=email_exists'))
+
+        # Attach google_id if missing on a Google-created account
+        if not already_linked and is_google_account:
             try:
                 with _cur(db) as cur:
                     cur.execute('UPDATE users SET google_id=%s WHERE id=%s', (google_id, user['id']))
@@ -1288,8 +1373,10 @@ def google_oauth_callback():
                 db.rollback()
 
         if user['status'] == 'suspended':
+            _write_audit('Google SSO Blocked (Account Suspended)', email, ip, 'Flagged', user['id'])
             return _clear_state(redirect('/login?error=suspended'))
         if user['status'] == 'pending':
+            _write_audit('Google SSO Blocked (Account Pending)', email, ip, 'Flagged', user['id'])
             return _clear_state(redirect('/login?error=pending'))
 
         try:
@@ -1302,9 +1389,9 @@ def google_oauth_callback():
             db.rollback()
             raise
 
-        token      = create_token(user['id'], user['role'], user['email'],
-                                   session_id=session_id, jti=token_jti, expires_at=expires_at)
-        user_dict  = _user_dict(user)
+        access_token = create_token(user['id'], user['role'], user['email'],
+                                    session_id=session_id, jti=token_jti, expires_at=expires_at)
+        user_dict             = _user_dict(user)
         user_dict['lastLogin'] = last_login
 
         _write_audit('Login Success (Google SSO)', user['email'], ip, 'Verified', user['id'])
@@ -1312,16 +1399,17 @@ def google_oauth_callback():
         resp = make_response(render_template(
             'google_success.html',
             user=json.dumps(user_dict),
-            token=token,
+            token=access_token,
             csrf_token=csrf_token,
             role=user['role']
         ))
-        resp.set_cookie(AUTH_COOKIE_NAME, token,
+        resp.set_cookie(AUTH_COOKIE_NAME, access_token,
                         max_age=int(ACCESS_TOKEN_HOURS * 3600),
                         path='/', samesite='Lax', secure=request.is_secure, httponly=True)
         return _clear_state(resp)
 
     else:
+        # New user — store only minimal data (no access/refresh tokens)
         pending_token = jwt.encode({
             'type':      'google_pending',
             'google_id': google_id,
@@ -1331,6 +1419,8 @@ def google_oauth_callback():
             'exp':       datetime.datetime.utcnow() + datetime.timedelta(minutes=15),
             'iat':       datetime.datetime.utcnow(),
         }, SECRET_KEY, algorithm='HS256')
+
+        _write_audit('Google SSO New User (Role Selection Pending)', email, ip, 'Verified')
 
         resp = redirect('/auth/google/complete')
         resp.set_cookie('google_pending', pending_token, max_age=900, httponly=True,

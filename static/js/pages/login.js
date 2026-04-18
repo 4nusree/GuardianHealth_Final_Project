@@ -1,8 +1,8 @@
 /* ============================================
    LOGIN PAGE JS — Real API Auth
    ============================================ */
-(function() {
-  var otp = ['','','','','',''];
+(function () {
+  var otp = ['', '', '', '', '', ''];
   var timerInterval = null;
   var timeLeft = 60;
   var pendingEmail = '';
@@ -21,9 +21,9 @@
     document.getElementById('step-credentials').classList.toggle('hidden', step !== 'credentials');
     document.getElementById('step-mfa').classList.toggle('hidden', step !== 'mfa');
     if (step === 'mfa') {
-      otp = ['','','','','',''];
+      otp = ['', '', '', '', '', ''];
       startTimer();
-      setTimeout(function() {
+      setTimeout(function () {
         var f = document.getElementById('otp-0');
         if (f) f.focus();
       }, 50);
@@ -34,7 +34,7 @@
     clearInterval(timerInterval);
     timeLeft = resendAfterSeconds;
     updateTimer();
-    timerInterval = setInterval(function() {
+    timerInterval = setInterval(function () {
       timeLeft--;
       updateTimer();
       if (timeLeft <= 0) clearInterval(timerInterval);
@@ -87,9 +87,9 @@
         // No MFA required — direct login
         Auth.setSession(data.user, data.token, data.csrf_token);
         showToast('Access Granted', 'Welcome back, ' + data.user.name + '!', 'success');
-        setTimeout(function() { Auth.redirectByRole(data.user.role); }, 600);
+        setTimeout(function () { Auth.redirectByRole(data.user.role); }, 600);
       }
-    } catch(e) {
+    } catch (e) {
       showToast('Connection Error', 'Could not reach server. Please try again.', 'error');
     }
 
@@ -123,8 +123,8 @@
 
       Auth.setSession(data.user, data.token, data.csrf_token);
       showToast('Access Granted', 'Welcome back, ' + data.user.name + '!', 'success');
-      setTimeout(function() { Auth.redirectByRole(data.user.role); }, 600);
-    } catch(e) {
+      setTimeout(function () { Auth.redirectByRole(data.user.role); }, 600);
+    } catch (e) {
       showToast('Connection Error', 'Could not verify MFA. Please try again.', 'error');
       btn.disabled = false;
       btn.innerHTML = orig;
@@ -132,25 +132,25 @@
   }
 
   function initOtp() {
-    [0,1,2,3,4,5].forEach(function(i) {
+    [0, 1, 2, 3, 4, 5].forEach(function (i) {
       var inp = document.getElementById('otp-' + i);
       if (!inp) return;
-      inp.addEventListener('input', function(e) {
+      inp.addEventListener('input', function (e) {
         otp[i] = e.target.value.replace(/\D/g, '').slice(-1);
         inp.value = otp[i];
-        if (otp[i] && i < 5) document.getElementById('otp-' + (i+1)).focus();
+        if (otp[i] && i < 5) document.getElementById('otp-' + (i + 1)).focus();
       });
-      inp.addEventListener('keydown', function(e) {
+      inp.addEventListener('keydown', function (e) {
         if (e.key === 'Backspace' && !otp[i] && i > 0) {
-          otp[i-1] = '';
-          var prev = document.getElementById('otp-' + (i-1));
+          otp[i - 1] = '';
+          var prev = document.getElementById('otp-' + (i - 1));
           prev.value = ''; prev.focus();
         }
         if (e.key === 'Enter') submitMfa();
       });
-      inp.addEventListener('paste', function(e) {
-        var pasted = (e.clipboardData.getData('text') || '').replace(/\D/g,'').slice(0,6);
-        pasted.split('').forEach(function(ch, j) {
+      inp.addEventListener('paste', function (e) {
+        var pasted = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+        pasted.split('').forEach(function (ch, j) {
           var o = document.getElementById('otp-' + j);
           if (o) { o.value = ch; otp[j] = ch; }
         });
@@ -162,7 +162,7 @@
     });
   }
 
-  document.addEventListener('DOMContentLoaded', function() {
+  document.addEventListener('DOMContentLoaded', function () {
     // Redirect if already logged in
     var existing = Auth.getUser();
     if (existing) { Auth.redirectByRole(existing.role); return; }
@@ -181,6 +181,8 @@
         google_not_configured: 'Google sign-in is not configured. Contact your administrator.',
         suspended: 'Your account has been suspended. Contact your administrator.',
         pending: 'Your account is pending administrator approval.',
+        email_exists: 'An account with this email already exists. Please sign in with your email and password.',
+        rate_limited: 'Too many sign-in attempts. Please wait a few minutes and try again.',
       };
       showToast('Sign-in Error', msgs[oauthError] || 'An error occurred. Please try again.', 'error');
       window.history.replaceState({}, '', '/login');
@@ -189,16 +191,16 @@
     // Risk indicator
     var emailEl = document.getElementById('login-email');
     var riskEl = document.getElementById('risk-indicator');
-    emailEl.addEventListener('input', function() {
+    emailEl.addEventListener('input', function () {
       var r = getRisk(emailEl.value);
       riskEl.innerHTML = r ? '<span class="risk-indicator ' + r.cls + '">' + r.icon + ' Session Risk: ' + r.level + '</span>' : '';
     });
 
     // Password enter key
-    document.getElementById('login-password').addEventListener('keydown', function(e) {
+    document.getElementById('login-password').addEventListener('keydown', function (e) {
       if (e.key === 'Enter') submitCredentials();
     });
-    emailEl.addEventListener('keydown', function(e) {
+    emailEl.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') document.getElementById('login-password').focus();
     });
 
@@ -207,11 +209,11 @@
 
     // MFA buttons
     document.getElementById('mfa-btn').addEventListener('click', submitMfa);
-    document.getElementById('back-btn').addEventListener('click', function() {
+    document.getElementById('back-btn').addEventListener('click', function () {
       clearInterval(timerInterval);
       showStep('credentials');
     });
-    document.getElementById('resend-btn').addEventListener('click', async function() {
+    document.getElementById('resend-btn').addEventListener('click', async function () {
       if (timeLeft > 0) return;
       var btn = this;
       btn.disabled = true;
@@ -233,7 +235,7 @@
         if (subtitle) subtitle.textContent = 'Enter the 6-digit code sent to ' + (data.masked_email || 'your registered email') + '. It expires in ' + codeExpiresMinutes + ' minutes.';
         startTimer();
         showToast('Code Sent', 'A new verification code was sent to your registered email.', 'default');
-      } catch(e) {
+      } catch (e) {
         showToast('Connection Error', 'Could not resend the verification code.', 'error');
         btn.disabled = false;
       }
