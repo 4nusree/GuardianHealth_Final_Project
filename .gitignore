@@ -1,17 +1,26 @@
-test/
-venv/
+# Environment secrets — never commit these
+.env
+guardianhelath/.env
+
+# Python
 __pycache__/
-instance/
-*.pyc
+*.py[cod]
 *.pyo
-*.pyd
+venv/
+.venv/
+*.egg-info/
+
+# Database (old SQLite file — no longer used)
 *.db
-*.sqlite3
-*.log
-*.env
-.env.*
-.DS_Store
-.idea/
-.vscode/
+
+# Blockchain signing key — never commit the private key
 blockchain/signing_key.pem
 blockchain/anchor.txt
+
+# OS
+.DS_Store
+
+# Development folders
+
+prods/
+guardianhelath/
