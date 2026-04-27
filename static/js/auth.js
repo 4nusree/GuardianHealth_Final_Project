@@ -1,6 +1,20 @@
 /* ============================================
    GUARDIANHEALTH — AUTH STATE + API CLIENT
    ============================================ */
+
+/* ── XSS-safe HTML escape (used by all dynamic renderers) ───────────────── */
+window.escapeHtml = function(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/`/g, '&#96;');
+};
+window.esc = window.escapeHtml;
+
 window.Auth = {
   getUser() {
     try { return JSON.parse(localStorage.getItem('gh_user')); } catch { return null; }
@@ -50,14 +64,17 @@ window.Auth = {
   },
 
   populateUI(user) {
+    const safeName = window.escapeHtml(user.name || '');
+    const safeRole = window.escapeHtml(user.role || '');
+    const safeInitial = window.escapeHtml((user.name || '?').charAt(0));
     const sidebarEl = document.getElementById('sidebar-user');
     if (sidebarEl) {
       sidebarEl.innerHTML = `
         <div class="sidebar-user-card">
-          <div class="sidebar-avatar">${user.name.charAt(0)}</div>
+          <div class="sidebar-avatar">${safeInitial}</div>
           <div>
-            <div class="sidebar-user-name">${user.name}</div>
-            <div class="sidebar-user-role">${user.role}</div>
+            <div class="sidebar-user-name">${safeName}</div>
+            <div class="sidebar-user-role">${safeRole}</div>
           </div>
         </div>
         <button class="sidebar-logout" onclick="Auth.logout()">
@@ -66,8 +83,8 @@ window.Auth = {
     }
     const topbarAvatar = document.getElementById('topbar-avatar');
     const topbarName = document.getElementById('topbar-name');
-    if (topbarAvatar) topbarAvatar.textContent = user.name.charAt(0);
-    if (topbarName) topbarName.textContent = user.name;
+    if (topbarAvatar) topbarAvatar.textContent = (user.name || '?').charAt(0);
+    if (topbarName) topbarName.textContent = user.name || '';
   },
 
   login(email) {

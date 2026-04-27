@@ -1,0 +1,20 @@
+# Environment secrets — never commit these
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Database (old SQLite file — no longer used)
+*.db
+
+# Blockchain signing key — never commit the private key
+blockchain/signing_key.pem
+blockchain/anchor.txt
+
+# OS
+.DS_Store

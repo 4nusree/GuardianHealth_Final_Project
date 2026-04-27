@@ -16,27 +16,24 @@
     <h1 class="page-title">Admin Console</h1>
     <p class="page-subtitle">Identity &amp; Access Management Overview</p>
   </div>
-  <button class="btn-outline" id="enforce-mfa-btn">
-    <i data-lucide="shield-alert"></i> Enforce Global MFA
-  </button>
+  <div style="display:flex;gap:10px;">
+    <button class="btn-outline" id="refresh-users-btn" title="Reload directory">Refresh</button>
+    <button class="btn-outline" id="enforce-mfa-btn">Enforce Global MFA</button>
+  </div>
 </div>
 
 <div class="stats-grid">
   <div class="stat-card">
     <div><div class="stat-label">Total Identities</div><div class="stat-value" id="stat-total">—</div></div>
-    <div class="stat-icon icon-blue"><i data-lucide="users"></i></div>
+  </div>
+  <div class="stat-card">
+    <div><div class="stat-label">Pending Approvals</div><div class="stat-value" id="stat-pending-count">—</div></div>
   </div>
   <div class="stat-card">
     <div><div class="stat-label">Active Sessions</div><div class="stat-value">47</div></div>
-    <div class="stat-icon icon-green"><i data-lucide="activity"></i></div>
-  </div>
-  <div class="stat-card">
-    <div><div class="stat-label">Failed Logins (24h)</div><div class="stat-value">12</div></div>
-    <div class="stat-icon icon-orange"><i data-lucide="alert-triangle"></i></div>
   </div>
   <div class="stat-card">
     <div><div class="stat-label">Security Alerts</div><div class="stat-value">3</div></div>
-    <div class="stat-icon icon-red"><i data-lucide="shield-alert"></i></div>
   </div>
 </div>
 

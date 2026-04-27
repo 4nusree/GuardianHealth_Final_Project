@@ -25,6 +25,7 @@ AUTH_COOKIE_NAME = 'gh_access_token'
 MFA_OTP_TTL_MINUTES = int(os.environ.get('MFA_OTP_TTL_MINUTES', '10'))
 MFA_OTP_MAX_ATTEMPTS = int(os.environ.get('MFA_OTP_MAX_ATTEMPTS', '5'))
 MFA_OTP_RESEND_SECONDS = int(os.environ.get('MFA_OTP_RESEND_SECONDS', '60'))
+PASSWORD_RESET_TTL_MINUTES = int(os.environ.get('PASSWORD_RESET_TTL_MINUTES', '30'))
 
 if not DATABASE_URL:
     raise RuntimeError(
@@ -43,6 +44,47 @@ def add_no_cache(response):
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
     return response
+
+# ── Security Headers ──────────────────────────────────────────────────────────
+# Defense-in-depth: even if a template ever rendered untrusted markup, these
+# headers limit what an attacker can do (XSS, clickjacking, MIME sniffing, etc).
+
+_CSP_POLICY = (
+    "default-src 'self'; "
+    # Allow inline scripts/styles + the two CDNs the app actually loads.
+    "script-src 'self' 'unsafe-inline' https://unpkg.com; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com data:; "
+    "img-src 'self' data: blob: https:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self' https://accounts.google.com;"
+)
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault('Content-Security-Policy',  _CSP_POLICY)
+    response.headers.setdefault('X-Content-Type-Options',   'nosniff')
+    response.headers.setdefault('X-Frame-Options',          'DENY')
+    response.headers.setdefault('Referrer-Policy',          'strict-origin-when-cross-origin')
+    response.headers.setdefault('Permissions-Policy',       'geolocation=(), microphone=(), camera=(), payment=()')
+    response.headers.setdefault('Cross-Origin-Opener-Policy', 'same-origin')
+    if request.is_secure:
+        response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    return response
+
+# ── Generic Input Validation ──────────────────────────────────────────────────
+_EMAIL_RE   = re.compile(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$')
+_NAME_RE    = re.compile(r"^[A-Za-z0-9 .,'\-]{1,80}$")
+_ROLE_SET   = {'admin', 'doctor', 'patient', 'staff'}
+_STATUS_SET = {'active', 'pending', 'suspended'}
+
+def _is_valid_email(value):
+    return bool(value and len(value) <= 254 and _EMAIL_RE.match(value))
+
+def _is_valid_name(value):
+    return bool(value and _NAME_RE.match(value))
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # One connection per request, stored on Flask's g object.
@@ -125,23 +167,36 @@ def _smtp_settings():
         raise RuntimeError('Missing SMTP configuration: ' + ', '.join(missing))
     return settings
 
-def _send_otp_email(user, code):
+def _send_email(to_email, subject, body):
+    """Send a plain-text email via the configured SMTP server."""
     settings = _smtp_settings()
     msg = EmailMessage()
-    msg['Subject'] = 'Your GuardianHealth verification code'
+    msg['Subject'] = subject
     msg['From'] = f'{settings["from_name"]} <{settings["from_email"]}>'
-    msg['To'] = user['email']
-    msg.set_content(
+    msg['To'] = to_email
+    msg.set_content(body)
+    with smtplib.SMTP(settings['host'], settings['port'], timeout=15) as smtp:
+        smtp.starttls()
+        smtp.login(settings['username'], settings['password'])
+        smtp.send_message(msg)
+
+def _send_otp_email(user, code):
+    _send_email(
+        user['email'],
+        'Your GuardianHealth verification code',
         f'Hello {user["name"]},\n\n'
         f'Your GuardianHealth verification code is: {code}\n\n'
         f'This code expires in {MFA_OTP_TTL_MINUTES} minutes. '
         'If you did not try to sign in, contact your administrator immediately.\n\n'
         'GuardianHealth Security'
     )
-    with smtplib.SMTP(settings['host'], settings['port'], timeout=15) as smtp:
-        smtp.starttls()
-        smtp.login(settings['username'], settings['password'])
-        smtp.send_message(msg)
+
+def _hash_reset_token(token):
+    return hmac.new(
+        SECRET_KEY.encode('utf-8'),
+        ('pwreset:' + token).encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
 
 def _mask_email(email):
     local, _, domain = email.partition('@')
@@ -215,9 +270,12 @@ def init_db():
                     last_visit   TEXT,
                     status       TEXT DEFAULT 'Stable',
                     doctor_id    TEXT,
-                    consent_flag BOOLEAN DEFAULT FALSE
+                    consent_flag BOOLEAN DEFAULT FALSE,
+                    vitals       TEXT
                 )
             """)
+            # Safe migration for existing deployments — add vitals column if missing
+            cur.execute("ALTER TABLE patients ADD COLUMN IF NOT EXISTS vitals TEXT")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS audit_logs (
                     id         TEXT PRIMARY KEY,
@@ -265,6 +323,16 @@ def init_db():
                 )
             """)
             cur.execute("ALTER TABLE mfa_email_otps ADD COLUMN IF NOT EXISTS temp_token_hash TEXT")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    id         TEXT PRIMARY KEY,
+                    user_id    TEXT NOT NULL,
+                    token_hash TEXT UNIQUE NOT NULL,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    used       BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT")
             cur.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS block_index INTEGER")
             cur.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS block_hash TEXT")
@@ -317,6 +385,10 @@ def init_db():
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_mfa_email_otps_user_id
                 ON mfa_email_otps(user_id, created_at DESC)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id
+                ON password_reset_tokens(user_id, created_at DESC)
             """)
 
         conn.commit()
@@ -773,9 +845,13 @@ def api_register():
     role     = data.get('role', 'patient')
     if not name or not email or not password:
         return jsonify({'error': 'Name, email and password required'}), 400
-    if len(password) < 6:
-        return jsonify({'error': 'Password must be at least 6 characters'}), 400
-    if role not in ('admin', 'doctor', 'patient', 'staff'):
+    if not _is_valid_name(name):
+        return jsonify({'error': 'Name contains invalid characters or is too long.'}), 400
+    if not _is_valid_email(email):
+        return jsonify({'error': 'Please enter a valid email address.'}), 400
+    if len(password) < 6 or len(password) > 256:
+        return jsonify({'error': 'Password must be 6–256 characters.'}), 400
+    if role not in _ROLE_SET:
         role = 'patient'
 
     db     = get_db()
@@ -831,6 +907,160 @@ def api_change_password():
     return jsonify({'ok': True})
 
 
+@app.route('/api/auth/forgot-password', methods=['POST'])
+def api_forgot_password():
+    """
+    Email a one-time password-reset link to the user.
+    Always returns the same generic success response so the endpoint
+    cannot be used to enumerate which emails have accounts.
+    """
+    data  = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').strip().lower()
+    ip    = _get_client_ip()
+
+    generic_response = jsonify({
+        'ok': True,
+        'message': 'If an account exists for that email, we have sent a password reset link.'
+    })
+
+    if not email or '@' not in email:
+        return generic_response
+
+    db = get_db()
+    try:
+        with _cur(db) as cur:
+            cur.execute('SELECT * FROM users WHERE lower(email)=%s', (email,))
+            user = cur.fetchone()
+
+        if not user:
+            _write_audit('Password Reset Requested (No Account)', email, ip, 'Flagged')
+            return generic_response
+
+        token       = secrets.token_urlsafe(32)
+        token_hash  = _hash_reset_token(token)
+        token_id    = 'pwr_' + secrets.token_hex(10)
+        expires_at  = datetime.datetime.utcnow() + datetime.timedelta(minutes=PASSWORD_RESET_TTL_MINUTES)
+
+        with _cur(db) as cur:
+            # Invalidate any outstanding tokens for this user before issuing a new one.
+            cur.execute(
+                'UPDATE password_reset_tokens SET used=TRUE '
+                'WHERE user_id=%s AND used=FALSE',
+                (user['id'],)
+            )
+            cur.execute(
+                'INSERT INTO password_reset_tokens(id,user_id,token_hash,expires_at,used) '
+                'VALUES(%s,%s,%s,%s,FALSE)',
+                (token_id, user['id'], token_hash, expires_at)
+            )
+        db.commit()
+
+        reset_url = request.host_url.rstrip('/') + '/reset-password?token=' + token
+        try:
+            _send_email(
+                user['email'],
+                'Reset your GuardianHealth password',
+                f'Hello {user["name"]},\n\n'
+                f'We received a request to reset the password for your GuardianHealth account.\n\n'
+                f'Use the link below to choose a new password. It expires in {PASSWORD_RESET_TTL_MINUTES} minutes '
+                f'and can be used only once:\n\n'
+                f'{reset_url}\n\n'
+                f'If you did not request this, you can safely ignore this email — your password will not change. '
+                f'For your security, contact your administrator if you receive password reset emails you did not request.\n\n'
+                f'GuardianHealth Security'
+            )
+        except RuntimeError:
+            # SMTP not configured — invalidate the token so it cannot leak.
+            with _cur(db) as cur:
+                cur.execute('UPDATE password_reset_tokens SET used=TRUE WHERE id=%s', (token_id,))
+            db.commit()
+            _write_audit('Password Reset Email Failed (SMTP Not Configured)', user['email'], ip, 'Flagged', user['id'])
+            return generic_response
+        except Exception:
+            with _cur(db) as cur:
+                cur.execute('UPDATE password_reset_tokens SET used=TRUE WHERE id=%s', (token_id,))
+            db.commit()
+            _write_audit('Password Reset Email Failed (Delivery Error)', user['email'], ip, 'Flagged', user['id'])
+            return generic_response
+
+        _write_audit('Password Reset Email Sent', user['email'], ip, 'Verified', user['id'])
+        return generic_response
+
+    except Exception:
+        db.rollback()
+        raise
+
+
+@app.route('/api/auth/reset-password', methods=['POST'])
+def api_reset_password():
+    """
+    Consume a one-time reset token and set a new password.
+    On success: marks the token used, terminates ALL existing sessions
+    for the user, and sends a confirmation email.
+    """
+    data    = request.get_json(silent=True) or {}
+    token   = (data.get('token') or '').strip()
+    new_pw  = data.get('new_password') or ''
+    ip      = _get_client_ip()
+
+    if not token:
+        return jsonify({'error': 'Reset token is required.'}), 400
+    if len(new_pw) < 12:
+        return jsonify({'error': 'Password must be at least 12 characters'}), 400
+
+    db = get_db()
+    try:
+        token_hash = _hash_reset_token(token)
+        with _cur(db) as cur:
+            cur.execute(
+                'SELECT t.*, (t.expires_at <= NOW()) AS expired, '
+                'u.id AS u_id, u.email AS u_email, u.name AS u_name '
+                'FROM password_reset_tokens t JOIN users u ON u.id=t.user_id '
+                'WHERE t.token_hash=%s',
+                (token_hash,)
+            )
+            row = cur.fetchone()
+
+        if not row or row['used'] or row['expired']:
+            _write_audit('Password Reset Failed (Invalid or Expired Token)',
+                         (row['u_email'] if row else 'unknown'), ip, 'Flagged',
+                         (row['u_id'] if row else None))
+            return jsonify({'error': 'This reset link is invalid or has expired. Please request a new one.'}), 400
+
+        with _cur(db) as cur:
+            cur.execute('UPDATE users SET password_hash=%s WHERE id=%s',
+                        (_hash_pw(new_pw), row['u_id']))
+            cur.execute('UPDATE password_reset_tokens SET used=TRUE WHERE id=%s', (row['id'],))
+            # Invalidate any other outstanding reset tokens for this user too.
+            cur.execute(
+                'UPDATE password_reset_tokens SET used=TRUE '
+                'WHERE user_id=%s AND used=FALSE',
+                (row['u_id'],)
+            )
+            _terminate_user_sessions(db, row['u_id'])
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    # Best-effort confirmation email — don't fail the request if it can't send.
+    try:
+        _send_email(
+            row['u_email'],
+            'Your GuardianHealth password was changed',
+            f'Hello {row["u_name"]},\n\n'
+            f'Your GuardianHealth password was just changed using the password-reset flow. '
+            f'For your security, all existing sessions have been signed out.\n\n'
+            f'If you did not perform this change, contact your administrator immediately.\n\n'
+            f'GuardianHealth Security'
+        )
+    except Exception:
+        pass
+
+    _write_audit('Password Reset Completed', row['u_email'], ip, 'Verified', row['u_id'])
+    return jsonify({'ok': True, 'message': 'Your password has been updated. Please sign in with your new password.'})
+
+
 @app.route('/api/auth/mfa', methods=['PUT'])
 @require_auth()
 def api_update_own_mfa():
@@ -883,9 +1113,17 @@ def api_create_user():
     email = (data.get('email') or '').strip().lower()
     name  = (data.get('name') or '').strip()
     role  = data.get('role', 'staff')
-    dept  = data.get('department', '')
+    dept  = (data.get('department') or '').strip()
     if not email or not name:
         return jsonify({'error': 'Name and email required'}), 400
+    if not _is_valid_name(name):
+        return jsonify({'error': 'Name contains invalid characters or is too long.'}), 400
+    if not _is_valid_email(email):
+        return jsonify({'error': 'Please enter a valid email address.'}), 400
+    if role not in _ROLE_SET:
+        return jsonify({'error': 'Invalid role.'}), 400
+    if len(dept) > 80:
+        return jsonify({'error': 'Department must be 80 characters or fewer.'}), 400
 
     db     = get_db()
     new_id = 'u_' + secrets.token_hex(6)
@@ -924,13 +1162,20 @@ def api_update_user(uid):
 
     updates, params = [], []
     if 'status' in data:
+        if data['status'] not in _STATUS_SET:
+            return jsonify({'error': 'Invalid status.'}), 400
         updates.append('status=%s');      params.append(data['status'])
     if 'mfaEnabled' in data:
         updates.append('mfa_enabled=%s'); params.append(1 if data['mfaEnabled'] else 0)
     if 'role' in data:
+        if data['role'] not in _ROLE_SET:
+            return jsonify({'error': 'Invalid role.'}), 400
         updates.append('role=%s');        params.append(data['role'])
     if 'department' in data:
-        updates.append('department=%s'); params.append(data['department'])
+        dept = (data.get('department') or '').strip()
+        if len(dept) > 80:
+            return jsonify({'error': 'Department must be 80 characters or fewer.'}), 400
+        updates.append('department=%s'); params.append(dept)
 
     if updates:
         try:
@@ -979,8 +1224,15 @@ def _patient_dict(row):
         'id': row['id'], 'name': row['name'], 'age': row['age'],
         'condition': row['condition'], 'lastVisit': row['last_visit'],
         'status': row['status'], 'doctorId': row['doctor_id'],
+        'doctorName': row.get('doctor_name'),
         'consentFlag': bool(row['consent_flag']),
+        'vitals': row.get('vitals') or '',
     }
+
+_PATIENT_SELECT = (
+    'SELECT p.*, u.name AS doctor_name '
+    'FROM patients p LEFT JOIN users u ON u.id = p.doctor_id'
+)
 
 @app.route('/api/patients', methods=['GET'])
 @require_auth(roles=['admin','doctor','staff'])
@@ -989,9 +1241,9 @@ def api_get_patients():
     role = g.token_data.get('role')
     with _cur(db) as cur:
         if role == 'doctor':
-            cur.execute('SELECT * FROM patients WHERE doctor_id=%s ORDER BY name', (g.token_data['sub'],))
+            cur.execute(_PATIENT_SELECT + ' WHERE p.doctor_id=%s ORDER BY p.name', (g.token_data['sub'],))
         else:
-            cur.execute('SELECT * FROM patients ORDER BY name')
+            cur.execute(_PATIENT_SELECT + ' ORDER BY p.name')
         rows = cur.fetchall()
     _write_audit('Viewed Patient List', g.token_data['email'], _get_client_ip(), 'Verified', g.token_data['sub'])
     return jsonify([_patient_dict(r) for r in rows])
@@ -1003,14 +1255,169 @@ def api_get_patient(pid):
     role = g.token_data.get('role')
     with _cur(db) as cur:
         if role == 'doctor':
-            cur.execute('SELECT * FROM patients WHERE id=%s AND doctor_id=%s', (pid, g.token_data['sub']))
+            cur.execute(_PATIENT_SELECT + ' WHERE p.id=%s AND p.doctor_id=%s', (pid, g.token_data['sub']))
         else:
-            cur.execute('SELECT * FROM patients WHERE id=%s', (pid,))
+            cur.execute(_PATIENT_SELECT + ' WHERE p.id=%s', (pid,))
         row = cur.fetchone()
     if not row:
         return jsonify({'error': 'Not found'}), 404
     _write_audit(f'Accessed Patient Record ({pid})', g.token_data['email'], _get_client_ip(), 'Verified', g.token_data['sub'])
     return jsonify(_patient_dict(row))
+
+@app.route('/api/doctors', methods=['GET'])
+@require_auth(roles=['admin','staff'])
+def api_list_doctors():
+    """Lightweight list of active doctors — used by Staff for assignment dropdowns."""
+    db = get_db()
+    with _cur(db) as cur:
+        cur.execute(
+            "SELECT id, name, email, department FROM users "
+            "WHERE role='doctor' AND status='active' ORDER BY name"
+        )
+        rows = cur.fetchall()
+    return jsonify([
+        {'id': r['id'], 'name': r['name'], 'email': r['email'], 'department': r.get('department') or ''}
+        for r in rows
+    ])
+
+_PATIENT_STATUS_SET = {'Stable', 'Critical', 'Recovering', 'Discharged'}
+
+@app.route('/api/patients', methods=['POST'])
+@require_auth(roles=['admin','staff'])
+def api_create_patient():
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    if not name or len(name) > 120:
+        return jsonify({'error': 'Patient name is required (max 120 chars).'}), 400
+
+    age = data.get('age')
+    try:
+        age = int(age) if age not in (None, '') else None
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Age must be a whole number.'}), 400
+    if age is not None and (age < 0 or age > 150):
+        return jsonify({'error': 'Age must be between 0 and 150.'}), 400
+
+    condition = (data.get('condition') or '').strip()[:200]
+    status    = data.get('status') or 'Stable'
+    if status not in _PATIENT_STATUS_SET:
+        return jsonify({'error': 'Invalid status.'}), 400
+
+    doctor_id = (data.get('doctorId') or '').strip() or None
+    db = get_db()
+    if doctor_id:
+        with _cur(db) as cur:
+            cur.execute("SELECT id FROM users WHERE id=%s AND role='doctor'", (doctor_id,))
+            if not cur.fetchone():
+                return jsonify({'error': 'Selected doctor not found.'}), 400
+
+    pid = secrets.token_hex(8)
+    with _cur(db) as cur:
+        cur.execute(
+            'INSERT INTO patients (id, name, age, condition, last_visit, status, doctor_id, consent_flag) '
+            'VALUES (%s,%s,%s,%s,%s,%s,%s,%s)',
+            (pid, name, age, condition, datetime.date.today().isoformat(), status, doctor_id, False)
+        )
+        db.commit()
+        cur.execute('SELECT * FROM patients WHERE id=%s', (pid,))
+        row = cur.fetchone()
+
+    _write_audit(f'Created Patient ({name})', g.token_data['email'], _get_client_ip(), 'Verified', g.token_data['sub'])
+    return jsonify(_patient_dict(row)), 201
+
+@app.route('/api/patients/<pid>', methods=['PUT'])
+@require_auth(roles=['admin','staff','doctor'])
+def api_update_patient(pid):
+    data = request.get_json(silent=True) or {}
+    role = g.token_data.get('role')
+    me   = g.token_data.get('sub')
+    db   = get_db()
+
+    with _cur(db) as cur:
+        cur.execute('SELECT * FROM patients WHERE id=%s', (pid,))
+        existing = cur.fetchone()
+    if not existing:
+        return jsonify({'error': 'Patient not found.'}), 404
+
+    # Doctors may only update their own assigned patients
+    if role == 'doctor' and existing.get('doctor_id') != me:
+        return jsonify({'error': 'Forbidden — patient is not assigned to you.'}), 403
+
+    # Role-based field allow-lists — anything outside is silently ignored
+    allowed = {
+        'admin':  {'doctorId','name','age','condition','status','vitals','lastVisit'},
+        'staff':  {'doctorId'},
+        'doctor': {'condition','status','vitals','lastVisit','age'},
+    }[role]
+
+    fields, values = [], []
+
+    if 'doctorId' in data and 'doctorId' in allowed:
+        doctor_id = (data.get('doctorId') or '').strip() or None
+        if doctor_id:
+            with _cur(db) as cur:
+                cur.execute("SELECT id, name FROM users WHERE id=%s AND role='doctor'", (doctor_id,))
+                doc = cur.fetchone()
+                if not doc:
+                    return jsonify({'error': 'Selected doctor not found.'}), 400
+        fields.append('doctor_id=%s'); values.append(doctor_id)
+
+    if 'name' in data and 'name' in allowed:
+        name = (data.get('name') or '').strip()
+        if not name or len(name) > 120:
+            return jsonify({'error': 'Patient name is required (max 120 chars).'}), 400
+        fields.append('name=%s'); values.append(name)
+
+    if 'age' in data and 'age' in allowed:
+        try:
+            age = int(data['age']) if data['age'] not in (None, '') else None
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Age must be a whole number.'}), 400
+        if age is not None and (age < 0 or age > 150):
+            return jsonify({'error': 'Age must be between 0 and 150.'}), 400
+        fields.append('age=%s'); values.append(age)
+
+    if 'condition' in data and 'condition' in allowed:
+        fields.append('condition=%s'); values.append((data.get('condition') or '').strip()[:200])
+
+    if 'status' in data and 'status' in allowed:
+        if data['status'] not in _PATIENT_STATUS_SET:
+            return jsonify({'error': 'Invalid status.'}), 400
+        fields.append('status=%s'); values.append(data['status'])
+
+    if 'vitals' in data and 'vitals' in allowed:
+        fields.append('vitals=%s'); values.append((data.get('vitals') or '').strip()[:500])
+
+    if 'lastVisit' in data and 'lastVisit' in allowed:
+        fields.append('last_visit=%s'); values.append((data.get('lastVisit') or '').strip()[:32])
+
+    if not fields:
+        return jsonify({'error': 'Nothing you can update on this patient.'}), 400
+
+    values.append(pid)
+    with _cur(db) as cur:
+        cur.execute(f'UPDATE patients SET {", ".join(fields)} WHERE id=%s', tuple(values))
+        db.commit()
+        cur.execute(_PATIENT_SELECT + ' WHERE p.id=%s', (pid,))
+        row = cur.fetchone()
+
+    action_kind = 'Reassigned' if 'doctor_id=%s' in fields else 'Updated'
+    _write_audit(f'{action_kind} Patient ({existing["name"]})', g.token_data['email'], _get_client_ip(), 'Verified', me)
+    return jsonify(_patient_dict(row))
+
+@app.route('/api/patients/<pid>', methods=['DELETE'])
+@require_auth(roles=['admin'])
+def api_delete_patient(pid):
+    db = get_db()
+    with _cur(db) as cur:
+        cur.execute('SELECT name FROM patients WHERE id=%s', (pid,))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({'error': 'Patient not found.'}), 404
+        cur.execute('DELETE FROM patients WHERE id=%s', (pid,))
+        db.commit()
+    _write_audit(f'Deleted Patient ({row["name"]})', g.token_data['email'], _get_client_ip(), 'Verified', g.token_data['sub'])
+    return jsonify({'ok': True})
 
 # ── API: Audit Logs ────────────────────────────────────────────────────────────
 
@@ -1575,6 +1982,12 @@ def login(): return render_template('login.html')
 @app.route('/register')
 def register(): return render_template('register.html')
 
+@app.route('/forgot-password')
+def forgot_password(): return render_template('forgot_password.html')
+
+@app.route('/reset-password')
+def reset_password(): return render_template('reset_password.html')
+
 @app.route('/admin')
 def admin(): return render_template('admin.html')
 
@@ -1587,20 +2000,38 @@ def patient(): return render_template('patient.html')
 @app.route('/staff')
 def staff(): return render_template('staff.html')
 
+def _admin_only_page(template_name):
+    """Render an admin-only HTML page; bounce non-admins to their own dashboard."""
+    token = request.cookies.get(AUTH_COOKIE_NAME, '')
+    if not token:
+        return redirect('/login')
+    try:
+        data = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+    except jwt.InvalidTokenError:
+        return redirect('/login')
+    role = (data.get('role') or '').lower()
+    if role != 'admin':
+        return redirect({
+            'doctor':  '/doctor',
+            'staff':   '/staff',
+            'patient': '/patient',
+        }.get(role, '/login'))
+    return render_template(template_name)
+
 @app.route('/security')
-def security(): return render_template('security.html')
+def security(): return _admin_only_page('security.html')
 
 @app.route('/iam')
-def iam(): return render_template('iam.html')
+def iam(): return _admin_only_page('iam.html')
 
 @app.route('/audit-logs')
-def audit_logs(): return render_template('audit-logs.html')
+def audit_logs(): return _admin_only_page('audit-logs.html')
 
 @app.route('/settings')
 def settings(): return render_template('settings.html')
 
 @app.route('/blockchain')
-def blockchain_explorer(): return render_template('blockchain.html')
+def blockchain_explorer(): return _admin_only_page('blockchain.html')
 
 # ── Boot ───────────────────────────────────────────────────────────────────────
 

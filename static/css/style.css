@@ -959,3 +959,131 @@ html.light .section-label { color: var(--text-muted); }
 .w-full { width: 100%; }
 .hidden { display: none !important; }
 .overlay-dimmer { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 29; }
+
+/* ============================================
+   PREMIUM POLISH (added 2026-04-27)
+   ============================================ */
+:root {
+  --shadow-elev:   0 1px 2px rgba(0,0,0,0.25), 0 12px 32px rgba(0,0,0,0.35);
+  --shadow-elev-2: 0 1px 2px rgba(0,0,0,0.3),  0 24px 48px rgba(0,0,0,0.45);
+  --hairline:      rgba(255,255,255,0.06);
+}
+
+html, body { font-feature-settings: 'cv11','ss01','ss03'; letter-spacing: -0.005em; }
+
+/* Refined card surface — subtle gradient + inner hairline */
+.card, .stat-card, .patient-detail-panel, .health-card.regular-card {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.012), rgba(255,255,255,0) 40%),
+    var(--bg-card);
+  box-shadow: var(--shadow-elev);
+  border-color: var(--border);
+  transition: border-color 0.2s, box-shadow 0.25s, transform 0.25s;
+}
+.stat-card:hover, .health-card.regular-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-elev-2); }
+
+/* Premium stat layout — bigger numbers, refined label */
+.stat-card { padding: 22px 22px 20px; }
+.stat-label { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; opacity: 0.85; }
+.stat-value {
+  font-size: 32px; font-weight: 700; margin-top: 8px; line-height: 1;
+  background: linear-gradient(180deg, var(--text), color-mix(in oklab, var(--text) 75%, transparent));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+
+/* Page title — tighter tracking, premium feel */
+.page-title { font-weight: 700; letter-spacing: -0.02em; }
+.page-subtitle { font-weight: 400; }
+
+/* Card header — slightly larger, more breathing room */
+.card-header { padding: 20px 26px; }
+.card-title { font-size: 14px; font-weight: 600; letter-spacing: 0.005em; }
+
+/* Refined table */
+thead tr { background: linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0)); }
+th { font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; padding: 14px 22px; }
+td { padding: 16px 22px; }
+.td-name { font-weight: 600; letter-spacing: -0.005em; }
+
+/* Buttons — premium gradient + crisp focus ring */
+.btn-primary {
+  background: linear-gradient(180deg, var(--primary), var(--primary-dark));
+  box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, 0 6px 18px rgba(20,184,166,0.28);
+  letter-spacing: 0.005em;
+}
+.btn-primary:hover { box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, 0 8px 22px rgba(20,184,166,0.36); }
+.btn-primary:focus-visible,
+.btn-outline:focus-visible,
+.btn-ghost:focus-visible,
+.btn-danger:focus-visible,
+.btn-success:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(20,184,166,0.35);
+}
+
+.btn-outline { font-weight: 600; padding: 9px 16px; border-radius: 10px; }
+.btn-outline:hover { background: rgba(20,184,166,0.06); }
+
+/* New: success / approve action button */
+.btn-success {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: var(--radius-sm);
+  border: 1px solid rgba(34,197,94,0.35);
+  color: var(--success); background: rgba(34,197,94,0.08);
+  font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.18s;
+}
+.btn-success:hover { background: rgba(34,197,94,0.18); border-color: var(--success); }
+.btn-success:disabled, .btn-danger:disabled, .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* New: compact primary button used in modals */
+.btn-primary-sm {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 9px 18px;
+  background: linear-gradient(180deg, var(--primary), var(--primary-dark));
+  color: #fff; border: none; border-radius: 10px;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, 0 6px 16px rgba(20,184,166,0.28);
+  transition: all 0.18s;
+}
+.btn-primary-sm:hover { transform: translateY(-1px); box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, 0 8px 22px rgba(20,184,166,0.36); }
+
+/* Sidebar — premium feel */
+.sidebar { background:
+  linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0) 30%),
+  var(--bg-card);
+}
+.sidebar-brand-name { letter-spacing: -0.01em; }
+.nav-link { transition: background 0.2s, color 0.2s, transform 0.15s; }
+.nav-link:hover { transform: translateX(2px); }
+.nav-link.active {
+  background: linear-gradient(90deg, rgba(20,184,166,0.18), rgba(20,184,166,0.08));
+  box-shadow: inset 0 0 0 1px rgba(20,184,166,0.22), inset 2px 0 0 var(--primary);
+}
+
+/* Topbar refinement */
+.topbar { backdrop-filter: blur(14px) saturate(140%); }
+
+/* Inputs — softer focus */
+.search-input:focus,
+.form-select:focus,
+.otp-input:focus {
+  box-shadow: 0 0 0 3px rgba(20,184,166,0.18);
+}
+
+/* Badges — slightly softer fonts */
+.badge { font-weight: 600; letter-spacing: 0.02em; padding: 4px 10px; }
+
+/* Light theme refinements */
+html.light .card,
+html.light .stat-card,
+html.light .patient-detail-panel,
+html.light .health-card.regular-card {
+  box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 8px 24px rgba(15,23,42,0.06);
+  background: linear-gradient(180deg, #ffffff, #fbfcfe);
+}
+html.light .stat-value {
+  background: linear-gradient(180deg, var(--text), color-mix(in oklab, var(--text) 60%, transparent));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+html.light thead tr { background: linear-gradient(180deg, #f8fafc, #ffffff); }
+html.light .nav-link.active { background: linear-gradient(90deg, rgba(20,184,166,0.14), rgba(20,184,166,0.04)); }
