@@ -2001,7 +2001,10 @@ def patient(): return render_template('patient.html')
 def staff(): return render_template('staff.html')
 
 def _admin_only_page(template_name):
-    """Render an admin-only HTML page; bounce non-admins to their own dashboard."""
+    """Render an admin-only HTML page; bounce non-admins to their own dashboard.
+    The access JWT does not embed the role (re-checked per request for zero-trust),
+    so we resolve the current role from the session row in the database.
+    """
     token = request.cookies.get(AUTH_COOKIE_NAME, '')
     if not token:
         return redirect('/login')
@@ -2009,7 +2012,31 @@ def _admin_only_page(template_name):
         data = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
     except jwt.InvalidTokenError:
         return redirect('/login')
-    role = (data.get('role') or '').lower()
+
+    sid = data.get('sid')
+    if not sid:
+        return redirect('/login')
+
+    try:
+        db = get_db()
+        with _cur(db) as cur:
+            cur.execute(
+                "SELECT u.role, u.status, s.status AS session_status, "
+                "(s.expires_at IS NOT NULL AND s.expires_at <= NOW()) AS expired "
+                "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = %s",
+                (sid,)
+            )
+            row = cur.fetchone()
+    except Exception:
+        return redirect('/login')
+
+    if (not row
+        or row['session_status'] != 'active'
+        or row['expired']
+        or row['status'] != 'active'):
+        return redirect('/login')
+
+    role = (row['role'] or '').lower()
     if role != 'admin':
         return redirect({
             'doctor':  '/doctor',
