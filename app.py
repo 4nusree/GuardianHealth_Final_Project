@@ -118,6 +118,20 @@ def close_db(e=None):
 
 _SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
 
+def _ensure_patient_row(db, user_id, name):
+    """If a patient row for this user_id doesn't exist, create one. Idempotent."""
+    with _cur(db) as cur:
+        cur.execute('SELECT id FROM patients WHERE user_id=%s LIMIT 1', (user_id,))
+        if cur.fetchone():
+            return
+        cur.execute(
+            'INSERT INTO patients (id, name, age, condition, last_visit, status, '
+            'doctor_id, consent_flag, user_id) '
+            'VALUES (%s, %s, NULL, NULL, %s, %s, NULL, FALSE, %s)',
+            (secrets.token_hex(8), name, datetime.date.today().isoformat(),
+             'Stable', user_id)
+        )
+
 def _ensure_str(value):
     if isinstance(value, str):
         return value
@@ -274,8 +288,10 @@ def init_db():
                     vitals       TEXT
                 )
             """)
-            # Safe migration for existing deployments — add vitals column if missing
+            # Safe migrations for existing deployments
             cur.execute("ALTER TABLE patients ADD COLUMN IF NOT EXISTS vitals TEXT")
+            cur.execute("ALTER TABLE patients ADD COLUMN IF NOT EXISTS user_id TEXT")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_patients_user_id ON patients(user_id)")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS audit_logs (
                     id         TEXT PRIMARY KEY,
@@ -863,6 +879,8 @@ def api_register():
                 'VALUES(%s,%s,%s,%s,%s,%s,%s)',
                 (new_id, name, email, _hash_pw(password), role, 'pending', 1)
             )
+        if role == 'patient':
+            _ensure_patient_row(db, new_id, name)
         db.commit()
     except psycopg2.errors.UniqueViolation:
         db.rollback()
@@ -1134,6 +1152,8 @@ def api_create_user():
                 'VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                 (new_id, name, email, _hash_pw('TempPass123!'), role, 'pending', 1, dept)
             )
+        if role == 'patient':
+            _ensure_patient_row(db, new_id, name)
         db.commit()
     except psycopg2.errors.UniqueViolation:
         db.rollback()
@@ -1184,6 +1204,8 @@ def api_update_user(uid):
                 cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=%s", params)
             if 'status' in data or 'role' in data or 'mfaEnabled' in data:
                 _terminate_user_sessions(db, uid)
+            if data.get('role') == 'patient':
+                _ensure_patient_row(db, uid, user['name'])
             db.commit()
         except Exception:
             db.rollback()
@@ -1956,6 +1978,8 @@ def api_google_complete():
                 'VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                 (new_id, name, email, '!google_sso!', role, 'pending', 1, google_id)
             )
+        if role == 'patient':
+            _ensure_patient_row(db, new_id, name)
         db.commit()
     except psycopg2.errors.UniqueViolation:
         db.rollback()
@@ -2031,9 +2055,9 @@ def _admin_only_page(template_name):
         return redirect('/login')
 
     if (not row
-        or row['session_status'] != 'active'
+        or (row['session_status'] or '').lower() != 'active'
         or row['expired']
-        or row['status'] != 'active'):
+        or (row['status'] or '').lower() != 'active'):
         return redirect('/login')
 
     role = (row['role'] or '').lower()
